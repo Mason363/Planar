@@ -1996,7 +1996,7 @@ export default function PlanarApp() {
           <div className="zoom-controls" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
             <button className="zoom-btn" onClick={handleZoomIn} title="Zoom In"><Plus size={14} /></button>
             <button className="zoom-btn" onClick={handleZoomOut} title="Zoom Out"><Minus size={14} /></button>
-            <button className="zoom-btn" style={{ fontSize: "9px" }} onClick={handleZoomReset} title="Reset Zoom">FIT</button>
+            <button className="zoom-btn" style={{ fontSize: "11px", fontWeight: "500" }} onClick={handleZoomReset} title="Reset Zoom">FIT</button>
           </div>
 
           <div 
@@ -2589,21 +2589,6 @@ export default function PlanarApp() {
                   Delete Image
                 </button>
               </section>
-
-              {/* About footer */}
-              <footer className="about-footer">
-                <div className="about-author">Made with ❤️ by Mason Chen</div>
-                <div className="about-links">
-                  <a href="https://github.com/Mason363" target="_blank" rel="noopener noreferrer" className="about-link">
-                    <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
-                    <span>GitHub</span>
-                  </a>
-                  <a href="https://buymeacoffee.com/masonchen" target="_blank" rel="noopener noreferrer" className="about-link">
-                    <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path><line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line></svg>
-                    <span>Buy Me a Coffee</span>
-                  </a>
-                </div>
-              </footer>
             </div>
           ) : (
             /* GENERAL DOCUMENT PANEL - split into visible progress steps */
@@ -2950,23 +2935,23 @@ export default function PlanarApp() {
                 </div>
               </footer>
 
-              {/* About author section */}
-              <footer className="about-footer">
-                <div className="about-author">Made with ❤️ by Mason Chen</div>
-                <div className="about-links">
-                  <a href="https://github.com/Mason363" target="_blank" rel="noopener noreferrer" className="about-link">
-                    <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
-                    <span>GitHub</span>
-                  </a>
-                  <a href="https://buymeacoffee.com/masonchen" target="_blank" rel="noopener noreferrer" className="about-link">
-                    <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path><line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line></svg>
-                    <span>Buy Me a Coffee</span>
-                  </a>
-                </div>
-              </footer>
-
             </div>
           )}
+
+          {/* About footer */}
+          <footer className="about-footer">
+            <div className="about-author">Made with ❤️ by Mason Chen</div>
+            <div className="about-links">
+              <a href="https://github.com/Mason363" target="_blank" rel="noopener noreferrer" className="about-link">
+                <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
+                <span>GitHub</span>
+              </a>
+              <a href="https://buymeacoffee.com/masonchen" target="_blank" rel="noopener noreferrer" className="about-link">
+                <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path><line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line></svg>
+                <span>Buy Me a Coffee</span>
+              </a>
+            </div>
+          </footer>
         </aside>
       </main>
     </div>

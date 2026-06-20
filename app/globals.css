@@ -397,7 +397,8 @@ html, body {
 .sidebar-panel {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -860,10 +861,23 @@ select option {
   justify-content: center;
   cursor: pointer;
   border-radius: 2px;
+  background-color: transparent;
+  border: none;
+  color: var(--text-main);
+  transition: background-color 0.2s ease, color 0.2s ease;
+  font-family: inherit;
 }
 
 .zoom-btn:hover {
   background-color: var(--hover-bg);
+}
+
+.zoom-btn:active {
+  background-color: var(--border-main);
+}
+
+.zoom-btn:focus {
+  outline: none;
 }
 
 /* Drag overlay for files */
