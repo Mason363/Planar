@@ -28,10 +28,10 @@
   /* Dark Theme Variables */
   --bg-app: #090909;
   --bg-panel: #111111;
-  --bg-canvas: #181818;
+  --bg-canvas: #161616;
   --text-main: #ededed;
   --text-secondary: #999999;
-  --text-muted: #555555;
+  --text-muted: #444444;
   --border-main: #222222;
   --border-hover: #333333;
   --accent-color: #ffffff;
@@ -170,6 +170,11 @@ html, body {
   padding: 80px;
   height: 100%;
   width: 100%;
+  cursor: grab;
+}
+
+.workspace-container:active {
+  cursor: grabbing;
 }
 
 .workspace-pasteboard {
@@ -209,7 +214,7 @@ html, body {
 .gluing-margin-overlay {
   position: absolute;
   border: 1px dotted rgba(0, 0, 0, 0.12);
-  background-color: rgba(0, 0, 0, 0.01);
+  background-color: rgba(0, 0, 0, 0.015);
   pointer-events: none;
   display: flex;
   align-items: center;
@@ -219,7 +224,7 @@ html, body {
 
 [data-theme="dark"] .gluing-margin-overlay {
   border-color: rgba(255, 255, 255, 0.12);
-  background-color: rgba(255, 255, 255, 0.01);
+  background-color: rgba(255, 255, 255, 0.015);
 }
 
 .overlap-label-horizontal {
@@ -378,6 +383,36 @@ html, body {
   overflow-y: auto;
 }
 
+/* Numbered Step groups to guide user */
+.step-group {
+  position: relative;
+  padding: 24px 20px;
+  border-bottom: 1px solid var(--border-main);
+}
+
+.step-number {
+  font-size: 2.2rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--text-muted);
+  opacity: 0.15;
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  user-select: none;
+}
+
+.step-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .sidebar-section {
   padding: 20px;
   border-bottom: 1px solid var(--border-main);
@@ -465,10 +500,48 @@ html, body {
   border-color: var(--text-main);
 }
 
-/* Ensure native select options have matching colors on dark mode */
 select option {
   background-color: var(--bg-panel);
   color: var(--text-main);
+}
+
+/* Range sliders */
+.range-slider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.range-slider-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.range-input {
+  width: 100%;
+  height: 4px;
+  background-color: var(--border-main);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+}
+
+.range-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background-color: var(--accent-color);
+  border: 1px solid var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.1s ease;
+}
+
+.range-input::-webkit-slider-thumb:active {
+  transform: scale(1.2);
 }
 
 /* Checkbox container */
@@ -826,16 +899,55 @@ select option {
   line-height: 1.4;
 }
 
-/* Selected highlight on image item thumbnail */
-.selected-badge {
-  background-color: var(--accent-color);
-  color: var(--accent-text);
-  font-size: 8px;
-  padding: 1px 4px;
-  border-radius: 2px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  margin-top: 4px;
-  display: inline-block;
+/* Inline Crop UI Styles */
+.crop-overlay-dim {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.crop-hightlight-box {
+  position: absolute;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--accent-color);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.crop-guide-lines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed rgba(255, 255, 255, 0.5);
+}
+
+.crop-guide-lines::after, .crop-guide-lines::before {
+  content: '';
+  position: absolute;
+  background-color: rgba(255, 255, 255, 0.35);
+}
+
+/* Rule of Thirds guides */
+.crop-guide-lines::after {
+  top: 33.33%;
+  bottom: 33.33%;
+  left: 0;
+  right: 0;
+  border-top: 1px dashed rgba(255, 255, 255, 0.3);
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.3);
+}
+
+.crop-guide-lines::before {
+  left: 33.33%;
+  right: 33.33%;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed rgba(255, 255, 255, 0.3);
+  border-right: 1px dashed rgba(255, 255, 255, 0.3);
 }
