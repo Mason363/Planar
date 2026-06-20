@@ -654,6 +654,23 @@ export default function PlanarApp() {
     }
   }, []);
 
+  // Dynamically update favicon based on theme
+  useEffect(() => {
+    const faviconHref = theme === "light" ? "/favicon-black.png" : "/favicon-white.png";
+    let links = document.querySelectorAll("link[rel~='icon']");
+    if (links.length > 0) {
+      links.forEach((link) => {
+        (link as HTMLLinkElement).href = faviconHref;
+      });
+    } else {
+      const link = document.createElement("link");
+      link.rel = "icon";
+      link.type = "image/png";
+      link.href = faviconHref;
+      document.getElementsByTagName("head")[0].appendChild(link);
+    }
+  }, [theme]);
+
   // Before unload unsaved warning
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -1765,7 +1782,11 @@ export default function PlanarApp() {
       {/* Top Header */}
       <header className="app-header">
         <div className="logo-section">
-          <div className="logo-dot"></div>
+          <img 
+            src={theme === "light" ? "/favicon-black.png" : "/favicon-white.png"} 
+            alt="Planar Logo" 
+            className="logo-icon"
+          />
           <span>Planar</span>
         </div>
         

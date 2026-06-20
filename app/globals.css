@@ -98,11 +98,10 @@ html, body {
   letter-spacing: -0.03em;
 }
 
-.logo-dot {
-  width: 8px;
-  height: 8px;
-  background-color: var(--accent-color);
-  border-radius: 50%;
+.logo-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
 }
 
 .header-controls {
