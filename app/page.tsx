@@ -454,19 +454,49 @@ export default function PlanarApp() {
     const container = workspaceRef.current;
     if (!container) return;
 
+    // Keep a local history of recent scroll deltas to distinguish trackpad vs mouse wheel
+    let wheelHistory: { dx: number; dy: number; time: number }[] = [];
+
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
 
-      // Pinch-to-zoom (trackpad pinch has e.ctrlKey=true) OR mouse wheel scroll zoom
-      // We distinguish mouse wheel zoom from trackpad swipe by checking if deltaX is 0 
-      // AND deltaY is a discrete multiple (trackpads send continuous small numbers, mice send large ticks like >= 45)
-      const isDiscrete = Math.abs(e.deltaY) >= 40 && Number.isInteger(e.deltaY);
-      const isMouseScroll = e.deltaX === 0 && isDiscrete;
+      const now = Date.now();
+      // Remove events older than 500ms
+      wheelHistory = wheelHistory.filter(x => now - x.time < 500);
+      wheelHistory.push({ dx: e.deltaX, dy: e.deltaY, time: now });
+      if (wheelHistory.length > 8) {
+        wheelHistory.shift();
+      }
+
+      // Check if there is any evidence of trackpad swipe (non-zero deltaX or fractional deltas)
+      const hasTrackpadSign = wheelHistory.some(
+        x => x.dx !== 0 || x.dx % 1 !== 0 || x.dy % 1 !== 0
+      );
+
+      // Discrete large integer steps (typical of physical mouse wheel ticks)
+      const isDiscreteMouse = e.deltaX === 0 && e.deltaY % 1 === 0 && Math.abs(e.deltaY) >= 4;
+
+      // If it's a discrete tick OR if we've seen at least 2 events and none have trackpad indicators, it's a mouse
+      const isMouseScroll = isDiscreteMouse || (!hasTrackpadSign && wheelHistory.length >= 2);
 
       if (e.ctrlKey || e.metaKey || isMouseScroll) {
         // Zoom
-        const zoomDelta = -e.deltaY * 0.0035; 
-        const nextZoom = Math.max(0.15, Math.min(3.0, zoomRef.current * Math.exp(zoomDelta)));
+        let factor = 1.0;
+        if (e.ctrlKey || e.metaKey) {
+          // Trackpad pinch-to-zoom: continuous and smooth
+          const zoomDelta = -e.deltaY * 0.012;
+          factor = Math.exp(zoomDelta);
+        } else {
+          // Mouse wheel scroll zoom:
+          // Normalize scroll steps. Standard notch is ~120, so we scale it.
+          // We want one notch (120) to zoom by ~10% (1.1x or 0.9x)
+          const scrollSteps = e.deltaY / 120;
+          const clampedSteps = Math.min(1.5, Math.max(-1.5, scrollSteps));
+          const zoomDelta = -clampedSteps * 0.1;
+          factor = 1 + zoomDelta;
+        }
+
+        const nextZoom = Math.max(0.15, Math.min(3.0, zoomRef.current * factor));
 
         const rect = container.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
