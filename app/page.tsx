@@ -896,7 +896,7 @@ export default function PlanarApp() {
       const { removeBackground } = await import("@imgly/background-removal");
       
       const config: any = {
-        publicPath: "https://unpkg.com/@imgly/background-removal-data@1.7.0/dist/",
+        publicPath: "https://staticimgly.com/@imgly/background-removal-data/1.7.0/dist/",
         debug: true,
         model: "isnet_quint8",
         progress: (key: string, current: number, total: number) => {
