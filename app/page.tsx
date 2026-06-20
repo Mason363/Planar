@@ -895,12 +895,39 @@ export default function PlanarApp() {
     try {
       const { removeBackground } = await import("@imgly/background-removal");
       
+      // Track downloaded file sizes to present a smooth, monotonic progress bar
+      const downloadedSizes: Record<string, number> = {};
+      const expectedSizes: Record<string, number> = {
+        "ort-wasm-simd-threaded.wasm": 2.5 * 1024 * 1024,
+        "ort-wasm-simd-threaded.jsep.wasm": 2.5 * 1024 * 1024,
+        "isnet.onnx": 44 * 1024 * 1024
+      };
+
       const config: any = {
         publicPath: "https://staticimgly.com/@imgly/background-removal-data/1.7.0/dist/",
         debug: true,
-        model: "isnet_quint8",
+        model: "isnet", // Use the high-quality full model for superior edge detection
         progress: (key: string, current: number, total: number) => {
-          const pct = Math.round((current / total) * 100);
+          const fileKey = key.split("/").pop() || key;
+          downloadedSizes[fileKey] = current;
+          if (total > 0) {
+            expectedSizes[fileKey] = total;
+          }
+
+          const totalDownloaded = Object.values(downloadedSizes).reduce((a, b) => a + b, 0);
+          
+          let totalExpected = 0;
+          const activeModelKey = "isnet.onnx";
+          const activeWasmKey = "ort-wasm-simd-threaded.wasm";
+
+          const keysToSum = [activeWasmKey, activeModelKey];
+          keysToSum.forEach(k => {
+            totalExpected += expectedSizes[k];
+          });
+
+          if (totalExpected === 0) totalExpected = expectedSizes[activeModelKey];
+
+          const pct = Math.min(100, Math.round((totalDownloaded / totalExpected) * 100));
           setBgRemovalProgress(isNaN(pct) ? 0 : pct);
         }
       };
