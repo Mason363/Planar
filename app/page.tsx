@@ -196,6 +196,18 @@ export default function PlanarApp() {
     scrollTop: 0,
   });
 
+  const [isPanning, setIsPanning] = useState(false);
+  const pendingScrollRef = useRef<{ left: number; top: number } | null>(null);
+
+  // Apply pending scroll alignment after zoom state has rendered in the DOM
+  useEffect(() => {
+    if (pendingScrollRef.current && workspaceRef.current) {
+      workspaceRef.current.scrollLeft = pendingScrollRef.current.left;
+      workspaceRef.current.scrollTop = pendingScrollRef.current.top;
+      pendingScrollRef.current = null;
+    }
+  }, [zoom]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space") {
@@ -230,6 +242,7 @@ export default function PlanarApp() {
       const container = workspaceRef.current;
       if (!container) return;
 
+      setIsPanning(true);
       panningInfo.current = {
         isPanning: true,
         startX: e.clientX,
@@ -256,6 +269,7 @@ export default function PlanarApp() {
   };
 
   const handleWorkspaceMouseUp = () => {
+    setIsPanning(false);
     panningInfo.current.isPanning = false;
     document.removeEventListener("mousemove", handleWorkspaceMouseMove);
     document.removeEventListener("mouseup", handleWorkspaceMouseUp);
@@ -443,8 +457,14 @@ export default function PlanarApp() {
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
 
-      if (e.ctrlKey || e.metaKey) {
-        // Pinch-to-zoom (trackpad) or Ctrl + scroll wheel
+      // Pinch-to-zoom (trackpad pinch has e.ctrlKey=true) OR mouse wheel scroll zoom
+      // We distinguish mouse wheel zoom from trackpad swipe by checking if deltaX is 0 
+      // AND deltaY is a discrete multiple (trackpads send continuous small numbers, mice send large ticks like >= 45)
+      const isDiscrete = Math.abs(e.deltaY) >= 40 && Number.isInteger(e.deltaY);
+      const isMouseScroll = e.deltaX === 0 && isDiscrete;
+
+      if (e.ctrlKey || e.metaKey || isMouseScroll) {
+        // Zoom
         const zoomDelta = -e.deltaY * 0.0035; 
         const nextZoom = Math.max(0.15, Math.min(3.0, zoomRef.current * Math.exp(zoomDelta)));
 
@@ -461,11 +481,13 @@ export default function PlanarApp() {
 
         setZoom(nextZoom);
 
-        // Adjust scroll position to keep the mouse point at the same screen position
-        container.scrollLeft = pointX * nextZoom - mouseX;
-        container.scrollTop = pointY * nextZoom - mouseY;
+        // Defer scroll offset setting to useEffect to prevent browser clipping during state updates
+        pendingScrollRef.current = {
+          left: pointX * nextZoom - mouseX,
+          top: pointY * nextZoom - mouseY,
+        };
       } else {
-        // Two-finger trackpad panning or mouse wheel scroll
+        // Two-finger trackpad panning or mouse wheel scroll pan
         container.scrollLeft += e.deltaX;
         container.scrollTop += e.deltaY;
       }
@@ -564,8 +586,11 @@ export default function PlanarApp() {
 
           setZoom(nextZoom);
 
-          container.scrollLeft = pointX * nextZoom - midX;
-          container.scrollTop = pointY * nextZoom - midY;
+          // Defer scroll offset setting to useEffect to prevent browser clipping during state updates
+          pendingScrollRef.current = {
+            left: pointX * nextZoom - midX,
+            top: pointY * nextZoom - midY,
+          };
         }
       }
     };
@@ -1777,10 +1802,10 @@ export default function PlanarApp() {
             stopCropping();
           }}
           style={{
-            cursor: spacePressed
-              ? panningInfo.current.isPanning
-                ? "grabbing"
-                : "grab"
+            cursor: isPanning
+              ? "grabbing"
+              : spacePressed
+              ? "grab"
               : "default",
           }}
         >
