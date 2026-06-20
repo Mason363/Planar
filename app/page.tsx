@@ -20,7 +20,8 @@ import {
   Crop,
   Layers,
   Sparkles,
-  Maximize2
+  Maximize2,
+  Coffee
 } from "lucide-react";
 
 // Types
@@ -140,18 +141,20 @@ export default function PlanarApp() {
   const [paperHeight, setPaperHeight] = useState<number>(297); // in mm
   const [sheetMargin, setSheetMargin] = useState<number>(5); // in mm
   const [gluingMargin, setGluingMargin] = useState<number>(10); // in mm
-  const [layoutMode, setLayoutMode] = useState<"flow" | "tiled">("flow");
+  const [layoutMode, setLayoutMode] = useState<"flow" | "tiled" | "maximise">("flow");
+  const [maxCols, setMaxCols] = useState<number>(2); // for maximise mode
+  const [maxRows, setMaxRows] = useState<number>(2); // for maximise mode
   const [allowRotation, setAllowRotation] = useState<boolean>(false);
   const [showOverlapGuides, setShowOverlapGuides] = useState<boolean>(true);
 
-  // Workspace and UI states
+  // Workspace states
   const [images, setImages] = useState<ImageItem[]>([]);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [zoom, setZoom] = useState<number>(0.8);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [exportFormat, setExportFormat] = useState<"pdf" | "png" | "jpg">("pdf");
   
-  // Background removal model download progress
+  // Background removal loading progress
   const [bgRemovalProgress, setBgRemovalProgress] = useState<number | null>(null);
   const [isBgRemovalProcessing, setIsBgRemovalProcessing] = useState<boolean>(false);
 
@@ -219,8 +222,10 @@ export default function PlanarApp() {
   }, []);
 
   const handleWorkspaceMouseDown = (e: React.MouseEvent) => {
-    // Enable panning on space pressed or middle click
-    if (e.button === 1 || spacePressed) {
+    // Start panning on middle-click, or when space is pressed, OR on left-click on any empty canvas area (not an image wrapper)
+    const isLeftClickOnEmpty = e.button === 0 && !(e.target as HTMLElement).closest(".image-wrapper") && !(e.target as HTMLElement).closest(".zoom-controls") && !(e.target as HTMLElement).closest(".banner");
+    
+    if (e.button === 1 || spacePressed || isLeftClickOnEmpty) {
       e.preventDefault();
       const container = workspaceRef.current;
       if (!container) return;
@@ -279,6 +284,157 @@ export default function PlanarApp() {
     initialRotation: 0,
   });
 
+  // Unified Pointer handler (handles both Mouse and Mobile Touch movements)
+  const handleGlobalPointerMove = (clientX: number, clientY: number, shiftKey: boolean) => {
+    const info = dragInfo.current;
+    if (!info.type || !info.imageId) return;
+
+    const deltaX = (clientX - info.startX) / (zoom * PX_PER_MM);
+    const deltaY = (clientY - info.startY) / (zoom * PX_PER_MM);
+
+    setImages((prev) =>
+      prev.map((img) => {
+        if (img.id !== info.imageId) return img;
+
+        if (info.type === "drag") {
+          let newX = info.initialX + deltaX;
+          let newY = info.initialY + deltaY;
+
+          newX = Math.max(-50, Math.min(newX, totalWidth + 50));
+          newY = Math.max(-50, Math.min(newY, totalHeight + 50));
+
+          return { ...img, x: newX, y: newY };
+        } 
+        
+        if (info.type === "resize") {
+          const ratio = info.initialHeight / info.initialWidth;
+          const cropRatioW = 1 - (img.crop.left + img.crop.right) / 100;
+          const cropRatioH = 1 - (img.crop.top + img.crop.bottom) / 100;
+
+          const visibleDeltaX = deltaX;
+          const visibleDeltaY = deltaY;
+
+          let newVisibleW = (info.initialWidth * cropRatioW) + visibleDeltaX;
+          let newVisibleH = (info.initialHeight * cropRatioH) + visibleDeltaY;
+
+          newVisibleW = Math.max(10 * cropRatioW, newVisibleW);
+          newVisibleH = Math.max(10 * cropRatioH, newVisibleH);
+
+          if (!shiftKey) {
+            const visibleRatio = (info.initialHeight * cropRatioH) / (info.initialWidth * cropRatioW);
+            if (Math.abs(visibleDeltaX) > Math.abs(visibleDeltaY)) {
+              newVisibleH = newVisibleW * visibleRatio;
+            } else {
+              newVisibleW = newVisibleH / visibleRatio;
+            }
+          }
+
+          const newFullW = newVisibleW / cropRatioW;
+          const newFullH = newVisibleH / cropRatioH;
+
+          return {
+            ...img,
+            targetWidth: newFullW,
+            targetHeight: newFullH,
+          };
+        }
+
+        if (info.type === "rotate") {
+          const imgEl = document.getElementById(`img-wrap-${img.id}`);
+          if (!imgEl) return img;
+
+          const rect = imgEl.getBoundingClientRect();
+          const centerX = rect.left + rect.width / 2;
+          const centerY = rect.top + rect.height / 2;
+
+          const angleRad = Math.atan2(clientY - centerY, clientX - centerX);
+          let angleDeg = (angleRad * 180) / Math.PI + 90;
+
+          if (shiftKey) {
+            angleDeg = Math.round(angleDeg / 45) * 45;
+          } else {
+            const nearest90 = Math.round(angleDeg / 90) * 90;
+            if (Math.abs(angleDeg - nearest90) < 5) {
+              angleDeg = nearest90;
+            }
+          }
+
+          angleDeg = (angleDeg + 360) % 360;
+
+          return {
+            ...img,
+            rotation: angleDeg,
+          };
+        }
+
+        return img;
+      })
+    );
+  };
+
+  const handleGlobalMouseMove = (e: MouseEvent) => {
+    handleGlobalPointerMove(e.clientX, e.clientY, e.shiftKey);
+  };
+
+  // Mouse Drag Handler
+  const handleImageMouseDown = (e: React.MouseEvent, img: ImageItem, actionType: "drag" | "resize" | "rotate") => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isCalibrationActive || croppingImageId) return;
+
+    setSelectedImageId(img.id);
+
+    dragInfo.current = {
+      type: actionType,
+      imageId: img.id,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: img.x,
+      initialY: img.y,
+      initialWidth: img.targetWidth,
+      initialHeight: img.targetHeight,
+      initialRotation: img.rotation,
+    };
+
+    document.addEventListener("mousemove", handleGlobalMouseMove);
+    document.addEventListener("mouseup", handleGlobalMouseUp);
+  };
+
+  // Mobile Touch Drag Handler
+  const handleImageTouchStart = (e: React.TouchEvent, img: ImageItem, actionType: "drag" | "resize" | "rotate") => {
+    if (isCalibrationActive || croppingImageId) return;
+    e.stopPropagation(); // prevent window scrolling/panning gestures
+
+    setSelectedImageId(img.id);
+
+    const touch = e.touches[0];
+    dragInfo.current = {
+      type: actionType,
+      imageId: img.id,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      initialX: img.x,
+      initialY: img.y,
+      initialWidth: img.targetWidth,
+      initialHeight: img.targetHeight,
+      initialRotation: img.rotation,
+    };
+
+    const handleTouchMove = (moveEvent: TouchEvent) => {
+      const moveTouch = moveEvent.touches[0];
+      handleGlobalPointerMove(moveTouch.clientX, moveTouch.clientY, false);
+    };
+
+    const handleTouchEnd = () => {
+      document.removeEventListener("touchmove", handleTouchMove);
+      document.removeEventListener("touchend", handleTouchEnd);
+      handleGlobalMouseUp();
+    };
+
+    document.addEventListener("touchmove", handleTouchMove, { passive: false });
+    document.addEventListener("touchend", handleTouchEnd);
+  };
+
   // Trackpad pinch-to-zoom (smooth, centered on cursor) and scroll panning
   useEffect(() => {
     const container = workspaceRef.current;
@@ -289,7 +445,6 @@ export default function PlanarApp() {
 
       if (e.ctrlKey || e.metaKey) {
         // Pinch-to-zoom (trackpad) or Ctrl + scroll wheel
-        // Exponential zoom delta makes the scaling smooth and natural
         const zoomDelta = -e.deltaY * 0.0035; 
         const nextZoom = Math.max(0.15, Math.min(3.0, zoomRef.current * Math.exp(zoomDelta)));
 
@@ -318,6 +473,116 @@ export default function PlanarApp() {
 
     container.addEventListener("wheel", handleWheel, { passive: false });
     return () => container.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  // Touch panning and pinch-to-zoom on mobile devices
+  useEffect(() => {
+    const container = workspaceRef.current;
+    if (!container) return;
+
+    let touchStartDist = 0;
+    let touchStartZoom = 1;
+    let touchStartPanX = 0;
+    let touchStartPanY = 0;
+    let isTouchPanning = false;
+    let touchStartScrollLeft = 0;
+    let touchStartScrollTop = 0;
+    let touchStartMidX = 0;
+    let touchStartMidY = 0;
+
+    const getTouchDist = (t1: Touch, t2: Touch) => {
+      const dx = t1.clientX - t2.clientX;
+      const dy = t1.clientY - t2.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    const getTouchMid = (t1: Touch, t2: Touch) => {
+      return {
+        x: (t1.clientX + t2.clientX) / 2,
+        y: (t1.clientY + t2.clientY) / 2,
+      };
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      // Avoid interfering with image dragging/resizing/cropping
+      const target = e.target as HTMLElement;
+      if (
+        target.closest(".image-wrapper") || 
+        target.closest(".resize-handle") || 
+        target.closest(".rotate-handle") || 
+        target.closest(".zoom-controls") || 
+        target.closest(".banner")
+      ) {
+        return;
+      }
+
+      if (e.touches.length === 1) {
+        // 1-finger touch: start panning
+        isTouchPanning = true;
+        const touch = e.touches[0];
+        touchStartPanX = touch.clientX;
+        touchStartPanY = touch.clientY;
+        touchStartScrollLeft = container.scrollLeft;
+        touchStartScrollTop = container.scrollTop;
+      } else if (e.touches.length === 2) {
+        // 2-finger touch: start pinch-to-zoom
+        isTouchPanning = false;
+        const dist = getTouchDist(e.touches[0], e.touches[1]);
+        touchStartDist = dist;
+        touchStartZoom = zoomRef.current;
+
+        const mid = getTouchMid(e.touches[0], e.touches[1]);
+        touchStartMidX = mid.x;
+        touchStartMidY = mid.y;
+        touchStartScrollLeft = container.scrollLeft;
+        touchStartScrollTop = container.scrollTop;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (isTouchPanning && e.touches.length === 1) {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const dx = touch.clientX - touchStartPanX;
+        const dy = touch.clientY - touchStartPanY;
+        container.scrollLeft = touchStartScrollLeft - dx;
+        container.scrollTop = touchStartScrollTop - dy;
+      } else if (e.touches.length === 2) {
+        e.preventDefault();
+        const dist = getTouchDist(e.touches[0], e.touches[1]);
+        if (dist > 5 && touchStartDist > 5) {
+          const scale = dist / touchStartDist;
+          const nextZoom = Math.max(0.15, Math.min(3.0, touchStartZoom * scale));
+
+          const rect = container.getBoundingClientRect();
+          const mid = getTouchMid(e.touches[0], e.touches[1]);
+          const midX = mid.x - rect.left;
+          const midY = mid.y - rect.top;
+
+          const pointX = (touchStartScrollLeft + midX) / touchStartZoom;
+          const pointY = (touchStartScrollTop + midY) / touchStartZoom;
+
+          setZoom(nextZoom);
+
+          container.scrollLeft = pointX * nextZoom - midX;
+          container.scrollTop = pointY * nextZoom - midY;
+        }
+      }
+    };
+
+    const handleTouchEnd = () => {
+      isTouchPanning = false;
+    };
+
+    container.addEventListener("touchstart", handleTouchStart, { passive: false });
+    container.addEventListener("touchmove", handleTouchMove, { passive: false });
+    container.addEventListener("touchend", handleTouchEnd);
+
+    return () => {
+      container.removeEventListener("touchstart", handleTouchStart);
+      container.removeEventListener("touchmove", handleTouchMove);
+      container.removeEventListener("touchend", handleTouchEnd);
+    };
   }, []);
 
   // Global window drag and drop listener (unconditional image upload in any state)
@@ -423,6 +688,19 @@ export default function PlanarApp() {
     return { w: visibleW, h: visibleH };
   };
 
+  // Helper to compute physical layout bounding box considering crop and rotation
+  const getImageLayoutSize = (img: ImageItem) => {
+    const visibleW = img.targetWidth * (1 - (img.crop.left + img.crop.right) / 100);
+    const visibleH = img.targetHeight * (1 - (img.crop.top + img.crop.bottom) / 100);
+    const rad = (img.rotation * Math.PI) / 180;
+    const cos = Math.abs(Math.cos(rad));
+    const sin = Math.abs(Math.sin(rad));
+    return {
+      w: visibleW * cos + visibleH * sin,
+      h: visibleW * sin + visibleH * cos,
+    };
+  };
+
   // File loading
   const loadImagesFromFiles = (files: FileList) => {
     Array.from(files).forEach((file) => {
@@ -437,8 +715,12 @@ export default function PlanarApp() {
           let initialW = img.naturalWidth * pxToMm;
           let initialH = img.naturalHeight * pxToMm;
 
-          const maxWidth = paperWidth - 2 * sheetMargin;
-          const maxHeight = paperHeight - 2 * sheetMargin;
+          const pWidth = paperWidthRef.current;
+          const pHeight = paperHeightRef.current;
+          const sMargin = sheetMarginRef.current;
+
+          const maxWidth = pWidth - 2 * sMargin;
+          const maxHeight = pHeight - 2 * sMargin;
           if (initialW > maxWidth || initialH > maxHeight) {
             const ratio = Math.min(maxWidth / initialW, maxHeight / initialH);
             initialW *= ratio;
@@ -457,8 +739,8 @@ export default function PlanarApp() {
             crop: defaultCrop(),
             useImageBounds: false,
             bounds: null,
-            x: sheetMargin + Math.random() * 10,
-            y: sheetMargin + Math.random() * 10,
+            x: sMargin + Math.random() * 10,
+            y: sMargin + Math.random() * 10,
             rotation: 0,
             mimeType: file.type,
             backgroundRemoved: false,
@@ -469,12 +751,21 @@ export default function PlanarApp() {
               newImg.bounds = bounds;
               setImages((prev) => {
                 const next = [...prev, newImg];
+                // In maximise mode, we auto-scale on import, otherwise distribute normally
+                if (layoutMode === "maximise") {
+                  setTimeout(() => maximiseImagesToPaperGrid(), 50); // small delay to ensure state updates
+                  return next;
+                }
                 return distributeImagesList(next);
               });
             });
           } else {
             setImages((prev) => {
               const next = [...prev, newImg];
+              if (layoutMode === "maximise") {
+                setTimeout(() => maximiseImagesToPaperGrid(), 50);
+                return next;
+              }
               return distributeImagesList(next);
             });
           }
@@ -525,40 +816,38 @@ export default function PlanarApp() {
     });
   };
 
-  // Drag and drop events for workspace
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      loadImagesFromFiles(e.dataTransfer.files);
-    }
-  };
-
-  // Client-side Background Removal (rembg)
+  // Client-side Background Removal (RemBG) - utilizing unpkg CDN for CORS fix on localhost
   const handleRemoveBackground = async (image: ImageItem) => {
     setIsBgRemovalProcessing(true);
     setBgRemovalProgress(0);
     try {
       const { removeBackground } = await import("@imgly/background-removal");
       
-      const config = {
+      const config: any = {
+        publicPath: "https://unpkg.com/@imgly/background-removal-data@1.7.0/dist/",
+        debug: true,
+        model: "isnet_quint8",
         progress: (key: string, current: number, total: number) => {
           const pct = Math.round((current / total) * 100);
           setBgRemovalProgress(isNaN(pct) ? 0 : pct);
         }
       };
 
-      const response = await fetch(image.originalSrc);
-      const blob = await response.blob();
+      let blob: Blob;
+      if (image.originalSrc.startsWith("data:")) {
+        const parts = image.originalSrc.split(",");
+        const mime = parts[0].match(/:(.*?);/)?.[1] || "image/png";
+        const bstr = atob(parts[1]);
+        let n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        while (n--) {
+          u8arr[n] = bstr.charCodeAt(n);
+        }
+        blob = new Blob([u8arr], { type: mime });
+      } else {
+        const response = await fetch(image.originalSrc);
+        blob = await response.blob();
+      }
 
       const transparentBlob = await removeBackground(blob, config);
       const transparentUrl = URL.createObjectURL(transparentBlob);
@@ -589,7 +878,7 @@ export default function PlanarApp() {
       console.error("Background removal failed:", error);
       setIsBgRemovalProcessing(false);
       setBgRemovalProgress(null);
-      alert("Failed to remove background. Ensure WebAssembly is supported in this browser.");
+      alert("Failed to remove background. Ensure WebAssembly/ONNX is supported in this browser.");
     }
   };
 
@@ -659,7 +948,7 @@ export default function PlanarApp() {
     setCalibrationDistance("");
   };
 
-  // Interactive Cropping snapping aspect ratio presets
+  // Snap crop preset ratio
   const snapCropToRatio = (img: ImageItem, ratioPreset: ImageCrop["ratioPreset"]): ImageCrop => {
     if (ratioPreset === "free") return img.crop;
 
@@ -705,7 +994,7 @@ export default function PlanarApp() {
     );
   };
 
-  // Clip Path CSS string generators
+  // Clip Path generators
   const getStarClipPath = (crop: ImageCrop) => {
     const coords: string[] = [];
     const angleStep = Math.PI / crop.starPoints;
@@ -744,9 +1033,144 @@ export default function PlanarApp() {
     return "none";
   };
 
+  // Maximise Layout Mode - Automatically scale images to maximum paper size grid, respecting print margins
+  const maximiseImagesToPaperGrid = () => {
+    if (images.length === 0) return;
+
+    // Calculate total paper poster boundaries
+    const pitchW = paperWidth - gluingMargin;
+    const pitchH = paperHeight - gluingMargin;
+    const totalGridW = maxCols * pitchW + gluingMargin;
+    const totalGridH = maxRows * pitchH + gluingMargin;
+
+    // Outermost margins calculation
+    const printableW = totalGridW - 2 * sheetMargin;
+    const printableH = totalGridH - 2 * sheetMargin;
+
+    if (images.length === 1) {
+      const img = images[0];
+      const cropRatioW = 1 - (img.crop.left + img.crop.right) / 100;
+      const cropRatioH = 1 - (img.crop.top + img.crop.bottom) / 100;
+
+      // Current layout size (rotated bounding box)
+      const { w: layoutW, h: layoutH } = getImageLayoutSize(img);
+      const aspect = layoutW / layoutH;
+
+      let newLayoutW = 0;
+      let newLayoutH = 0;
+
+      if (aspect > printableW / printableH) {
+        newLayoutW = printableW;
+        newLayoutH = printableW / aspect;
+      } else {
+        newLayoutH = printableH;
+        newLayoutW = printableH * aspect;
+      }
+
+      // Scale factor
+      const scale = newLayoutW / layoutW;
+
+      // Scaled unrotated size
+      const newFullW = img.targetWidth * scale;
+      const newFullH = img.targetHeight * scale;
+
+      const newVisibleW = newFullW * cropRatioW;
+      const newVisibleH = newFullH * cropRatioH;
+
+      // Center coordinates
+      const targetCenterX = sheetMargin + printableW / 2;
+      const targetCenterY = sheetMargin + printableH / 2;
+
+      const newX = targetCenterX - newVisibleW / 2;
+      const newY = targetCenterY - newVisibleH / 2;
+
+      setImages([
+        {
+          ...img,
+          targetWidth: newFullW,
+          targetHeight: newFullH,
+          x: newX,
+          y: newY,
+        }
+      ]);
+    } else {
+      // Multiple images packing and group scaling
+      // 1. Temporarily scale all images down proportionally so they fit within the canvas size
+      // We want each image to be small enough so they can easily pack.
+      const targetMaxImgDim = Math.min(printableW, printableH) / Math.max(2, Math.ceil(Math.sqrt(images.length)));
+      const preScaledImages = images.map((img) => {
+        const { w: layoutW, h: layoutH } = getImageLayoutSize(img);
+        const maxDim = Math.max(layoutW, layoutH);
+        let scaleDown = 1;
+        if (maxDim > targetMaxImgDim) {
+          scaleDown = targetMaxImgDim / maxDim;
+        }
+        return {
+          ...img,
+          targetWidth: img.targetWidth * scaleDown,
+          targetHeight: img.targetHeight * scaleDown,
+        };
+      });
+
+      // 2. Pack the pre-scaled images onto the canvas using the distribute packing algorithm
+      const packed = distributeImagesList(preScaledImages);
+
+      let minX = Infinity, minY = Infinity;
+      let maxX = -Infinity, maxY = -Infinity;
+
+      packed.forEach((img) => {
+        const { w, h } = getImageLayoutSize(img);
+        if (img.x < minX) minX = img.x;
+        if (img.y < minY) minY = img.y;
+        if (img.x + w > maxX) maxX = img.x + w;
+        if (img.y + h > maxY) maxY = img.y + h;
+      });
+
+      if (minX === Infinity) return;
+
+      const boxW = maxX - minX;
+      const boxH = maxY - minY;
+
+      if (boxW <= 0 || boxH <= 0) return;
+
+      // 3. Scale group proportionally to fill printable dimensions
+      const scale = Math.min(printableW / boxW, printableH / boxH);
+
+      // Centering offset
+      const finalW = boxW * scale;
+      const finalH = boxH * scale;
+      const dx = sheetMargin + (printableW - finalW) / 2 - minX * scale;
+      const dy = sheetMargin + (printableH - finalH) / 2 - minY * scale;
+
+      const scaled = packed.map((img) => {
+        return {
+          ...img,
+          targetWidth: img.targetWidth * scale,
+          targetHeight: img.targetHeight * scale,
+          x: img.x * scale + dx,
+          y: img.y * scale + dy,
+        };
+      });
+
+      setImages(scaled);
+    }
+  };
+
+  // Trigger auto-scaling when settings or image shapes (crop/rotation) change in maximise mode
+  const imagesLayoutKey = images.map(img => 
+    `${img.id}:${img.crop.shape}:${img.crop.left}:${img.crop.right}:${img.crop.top}:${img.crop.bottom}:${img.rotation}:${img.width}:${img.height}`
+  ).join('|');
+
+  useEffect(() => {
+    if (images.length === 0) return;
+    if (layoutMode === "maximise") {
+      maximiseImagesToPaperGrid();
+    }
+  }, [layoutMode, maxCols, maxRows, paperWidth, paperHeight, sheetMargin, gluingMargin, imagesLayoutKey]);
+
   // Page layout boundaries
   const getLayoutDimensions = () => {
-    if (images.length === 0) {
+    if (images.length === 0 && layoutMode !== "maximise") {
       return { totalWidth: paperWidth, totalHeight: paperHeight, cols: 1, rows: 1, pagesCount: 1 };
     }
 
@@ -762,7 +1186,7 @@ export default function PlanarApp() {
         rows: pagesCount,
         pagesCount
       };
-    } else {
+    } else if (layoutMode === "tiled") {
       const pitchW = paperWidth - gluingMargin;
       const pitchH = paperHeight - gluingMargin;
 
@@ -770,9 +1194,9 @@ export default function PlanarApp() {
       let maxBottom = paperHeight;
 
       images.forEach((img) => {
-        const { w: visibleW, h: visibleH } = getImageVisibleSize(img);
-        const rightEdge = img.x + visibleW;
-        const bottomEdge = img.y + visibleH;
+        const { w: layoutW, h: layoutH } = getImageLayoutSize(img);
+        const rightEdge = img.x + layoutW;
+        const bottomEdge = img.y + layoutH;
         if (rightEdge > maxRight) maxRight = rightEdge;
         if (bottomEdge > maxBottom) maxBottom = bottomEdge;
       });
@@ -788,6 +1212,17 @@ export default function PlanarApp() {
         rows,
         pagesCount
       };
+    } else {
+      // Maximise Mode - Fixed cols and rows paper poster grid
+      const pitchW = paperWidth - gluingMargin;
+      const pitchH = paperHeight - gluingMargin;
+      return {
+        totalWidth: maxCols * pitchW + gluingMargin,
+        totalHeight: maxRows * pitchH + gluingMargin,
+        cols: maxCols,
+        rows: maxRows,
+        pagesCount: maxCols * maxRows
+      };
     }
   };
 
@@ -797,25 +1232,34 @@ export default function PlanarApp() {
 
   const { totalWidth, totalHeight, cols, rows, pagesCount } = getLayoutDimensions();
 
-  // Distribute packing algorithm (considers cropped visible sizes)
+  // Distribute packing algorithm
   const distributeImagesList = (items: ImageItem[]): ImageItem[] => {
     if (items.length === 0) return items;
 
     const margin = sheetMargin;
     const spacing = 3; 
-    const printableW = paperWidth - 2 * margin;
-    const printableH = paperHeight - 2 * margin;
+
+    // Printable boundaries based on layout modes
+    let printableW = paperWidth - 2 * margin;
+    let printableH = paperHeight - 2 * margin;
+
+    if (layoutMode === "maximise") {
+      const pitchW = paperWidth - gluingMargin;
+      const pitchH = paperHeight - gluingMargin;
+      printableW = (maxCols * pitchW + gluingMargin) - 2 * margin;
+      printableH = (maxRows * pitchH + gluingMargin) - 2 * margin;
+    }
 
     const normalImages = items.filter((img) => {
-      const { w, h } = getImageVisibleSize(img);
+      const { w, h } = getImageLayoutSize(img);
       return (w <= printableW && h <= printableH) || (allowRotation && h <= printableW && w <= printableH);
     });
 
     const largeImages = items.filter((img) => !normalImages.includes(img));
 
     const sortedNormal = [...normalImages].sort((a, b) => {
-      const { w: wA, h: hA } = getImageVisibleSize(a);
-      const { w: wB, h: hB } = getImageVisibleSize(b);
+      const { w: wA, h: hA } = getImageLayoutSize(a);
+      const { w: wB, h: hB } = getImageLayoutSize(b);
       return (wB * hB) - (wA * hA);
     });
 
@@ -828,7 +1272,7 @@ export default function PlanarApp() {
     const pagePlacements: PlacedRect[][] = [[]];
 
     const positionedNormal = sortedNormal.map((img) => {
-      const { w: imgW, h: imgH } = getImageVisibleSize(img);
+      const { w: imgW, h: imgH } = getImageLayoutSize(img);
 
       for (let pageIdx = 0; pageIdx < pagePlacements.length; pageIdx++) {
         const placed = pagePlacements[pageIdx];
@@ -845,7 +1289,7 @@ export default function PlanarApp() {
             ...img,
             x: absX,
             y: absY,
-            rotation: fitPos.rotation,
+            rotation: (img.rotation + fitPos.rotation) % 360,
           };
         }
       }
@@ -867,7 +1311,7 @@ export default function PlanarApp() {
         ...img,
         x: absX,
         y: absY,
-        rotation: finalPos.rotation,
+        rotation: (img.rotation + finalPos.rotation) % 360,
       };
     });
 
@@ -886,23 +1330,6 @@ export default function PlanarApp() {
     });
 
     return [...positionedNormal, ...positionedLarge];
-  };
-
-  const handleDistributeClick = () => {
-    setImages((prev) => distributeImagesList(prev));
-  };
-
-  const checkOverlap = (
-    x1: number, y1: number, w1: number, h1: number,
-    x2: number, y2: number, w2: number, h2: number,
-    spacing: number
-  ) => {
-    return !(
-      x1 + w1 + spacing <= x2 ||
-      x2 + w2 + spacing <= x1 ||
-      y1 + h1 + spacing <= y2 ||
-      y2 + h2 + spacing <= y1
-    );
   };
 
   const findSpace = (
@@ -954,125 +1381,16 @@ export default function PlanarApp() {
     return null;
   };
 
-  // Mouse drag handlers on the canvas
-  const handleImageMouseDown = (e: React.MouseEvent, img: ImageItem, actionType: "drag" | "resize" | "rotate") => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (isCalibrationActive || croppingImageId) return;
-
-    setSelectedImageId(img.id);
-
-    const startX = e.clientX;
-    const startY = e.clientY;
-
-    dragInfo.current = {
-      type: actionType,
-      imageId: img.id,
-      startX,
-      startY,
-      initialX: img.x,
-      initialY: img.y,
-      initialWidth: img.targetWidth,
-      initialHeight: img.targetHeight,
-      initialRotation: img.rotation,
-    };
-
-    document.addEventListener("mousemove", handleGlobalMouseMove);
-    document.addEventListener("mouseup", handleGlobalMouseUp);
-  };
-
-  const handleGlobalMouseMove = (e: MouseEvent) => {
-    const info = dragInfo.current;
-    if (!info.type || !info.imageId) return;
-
-    const deltaX = (e.clientX - info.startX) / (zoom * PX_PER_MM);
-    const deltaY = (e.clientY - info.startY) / (zoom * PX_PER_MM);
-
-    setImages((prev) =>
-      prev.map((img) => {
-        if (img.id !== info.imageId) return img;
-
-        if (info.type === "drag") {
-          let newX = info.initialX + deltaX;
-          let newY = info.initialY + deltaY;
-
-          newX = Math.max(-50, Math.min(newX, totalWidth + 50));
-          newY = Math.max(-50, Math.min(newY, totalHeight + 50));
-
-          return { ...img, x: newX, y: newY };
-        } 
-        
-        if (info.type === "resize") {
-          const ratio = info.initialHeight / info.initialWidth;
-          // Calculate visibility scaling ratios
-          const cropRatioW = 1 - (img.crop.left + img.crop.right) / 100;
-          const cropRatioH = 1 - (img.crop.top + img.crop.bottom) / 100;
-
-          // The resize delta applies to the cropped visual boundaries,
-          // so we convert visible delta back to full targetWidth change
-          const visibleDeltaX = deltaX;
-          const visibleDeltaY = deltaY;
-
-          let newVisibleW = (info.initialWidth * cropRatioW) + visibleDeltaX;
-          let newVisibleH = (info.initialHeight * cropRatioH) + visibleDeltaY;
-
-          newVisibleW = Math.max(10 * cropRatioW, newVisibleW);
-          newVisibleH = Math.max(10 * cropRatioH, newVisibleH);
-
-          // Maintain aspect ratio of visible boundaries unless Shift is held
-          if (!e.shiftKey) {
-            const visibleRatio = (info.initialHeight * cropRatioH) / (info.initialWidth * cropRatioW);
-            if (Math.abs(visibleDeltaX) > Math.abs(visibleDeltaY)) {
-              newVisibleH = newVisibleW * visibleRatio;
-            } else {
-              newVisibleW = newVisibleH / visibleRatio;
-            }
-          }
-
-          // Back calculate full target physical dimensions
-          const newFullW = newVisibleW / cropRatioW;
-          const newFullH = newVisibleH / cropRatioH;
-
-          return {
-            ...img,
-            targetWidth: newFullW,
-            targetHeight: newFullH,
-          };
-        }
-
-        if (info.type === "rotate") {
-          const imgEl = document.getElementById(`img-wrap-${img.id}`);
-          if (!imgEl) return img;
-
-          const rect = imgEl.getBoundingClientRect();
-          const centerX = rect.left + rect.width / 2;
-          const centerY = rect.top + rect.height / 2;
-
-          const currentX = e.clientX;
-          const currentY = e.clientY;
-
-          const angleRad = Math.atan2(currentY - centerY, currentX - centerX);
-          let angleDeg = (angleRad * 180) / Math.PI + 90;
-
-          if (e.shiftKey) {
-            angleDeg = Math.round(angleDeg / 45) * 45;
-          } else {
-            const nearest90 = Math.round(angleDeg / 90) * 90;
-            if (Math.abs(angleDeg - nearest90) < 5) {
-              angleDeg = nearest90;
-            }
-          }
-
-          angleDeg = (angleDeg + 360) % 360;
-
-          return {
-            ...img,
-            rotation: angleDeg,
-          };
-        }
-
-        return img;
-      })
+  const checkOverlap = (
+    x1: number, y1: number, w1: number, h1: number,
+    x2: number, y2: number, w2: number, h2: number,
+    spacing: number
+  ) => {
+    return !(
+      x1 + w1 + spacing <= x2 ||
+      x2 + w2 + spacing <= x1 ||
+      y1 + h1 + spacing <= y2 ||
+      y2 + h2 + spacing <= y1
     );
   };
 
@@ -1092,12 +1410,10 @@ export default function PlanarApp() {
     document.removeEventListener("mouseup", handleGlobalMouseUp);
   };
 
-  // Zoom controls
   const handleZoomIn = () => setZoom((z) => Math.min(3.0, z + 0.1));
   const handleZoomOut = () => setZoom((z) => Math.max(0.15, z - 0.1));
   const handleZoomReset = () => setZoom(0.8);
 
-  // Triggering visual inline crop mode
   const startCropping = (id: string) => {
     setSelectedImageId(id);
     setCroppingImageId(id);
@@ -1180,14 +1496,15 @@ export default function PlanarApp() {
       pageLeft = 0;
       pageTop = pageIndex * paperHeight;
     } else {
+      // Tiled & Maximise Modes
       const pitchW = paperWidth - gluingMargin;
       const pitchH = paperHeight - gluingMargin;
       
       const maxImgRight = images.reduce((max, img) => {
-        const { w } = getImageVisibleSize(img);
+        const { w } = getImageLayoutSize(img);
         return Math.max(max, img.x + w);
       }, paperWidth);
-      const colsCount = Math.max(1, Math.ceil((maxImgRight - 0.1) / pitchW));
+      const colsCount = layoutMode === "maximise" ? maxCols : Math.max(1, Math.ceil((maxImgRight - 0.1) / pitchW));
       
       const col = pageIndex % colsCount;
       const row = Math.floor(pageIndex / colsCount);
@@ -1195,7 +1512,8 @@ export default function PlanarApp() {
       pageTop = row * pitchH;
     }
 
-    if (layoutMode === "tiled" && gluingMargin > 0 && showOverlapGuides) {
+    // Draw overlap gluing dashed guides
+    if (layoutMode !== "flow" && gluingMargin > 0 && showOverlapGuides) {
       ctx.strokeStyle = "#cccccc";
       ctx.lineWidth = 0.5 * renderScale;
       ctx.setLineDash([2 * renderScale, 2 * renderScale]);
@@ -1203,16 +1521,16 @@ export default function PlanarApp() {
       const pitchW = paperWidth - gluingMargin;
       const pitchH = paperHeight - gluingMargin;
       const maxImgRight = images.reduce((max, img) => {
-        const { w } = getImageVisibleSize(img);
+        const { w } = getImageLayoutSize(img);
         return Math.max(max, img.x + w);
       }, paperWidth);
       const maxImgBottom = images.reduce((max, img) => {
-        const { h } = getImageVisibleSize(img);
+        const { h } = getImageLayoutSize(img);
         return Math.max(max, img.y + h);
       }, paperHeight);
       
-      const colsCount = Math.max(1, Math.ceil((maxImgRight - 0.1) / pitchW));
-      const rowsCount = Math.max(1, Math.ceil((maxImgBottom - 0.1) / pitchH));
+      const colsCount = layoutMode === "maximise" ? maxCols : Math.max(1, Math.ceil((maxImgRight - 0.1) / pitchW));
+      const rowsCount = layoutMode === "maximise" ? maxRows : Math.max(1, Math.ceil((maxImgBottom - 0.1) / pitchH));
       const col = pageIndex % colsCount;
       const row = Math.floor(pageIndex / colsCount);
 
@@ -1245,14 +1563,15 @@ export default function PlanarApp() {
 
     for (const img of images) {
       const { w: visibleW, h: visibleH } = getImageVisibleSize(img);
+      const { w: layoutW, h: layoutH } = getImageLayoutSize(img);
       const imgLeft = img.x;
       const imgTop = img.y;
 
       const intersects = 
         imgLeft < pageLeft + paperWidth &&
-        imgLeft + visibleW > pageLeft &&
+        imgLeft + layoutW > pageLeft &&
         imgTop < pageTop + paperHeight &&
-        imgTop + visibleH > pageTop;
+        imgTop + layoutH > pageTop;
 
       if (!intersects) continue;
 
@@ -1268,7 +1587,6 @@ export default function PlanarApp() {
       const relX = imgLeft - pageLeft;
       const relY = imgTop - pageTop;
 
-      // Center visual rotation coordinate centering
       const centerX = (relX + visibleW / 2) * renderScale;
       const centerY = (relY + visibleH / 2) * renderScale;
       ctx.translate(centerX, centerY);
@@ -1314,7 +1632,6 @@ export default function PlanarApp() {
       ctx.closePath();
       ctx.clip();
 
-      // Compute uncropped original size offsets in mm
       const offsetX = img.targetWidth * (img.crop.left / 100);
       const offsetY = img.targetHeight * (img.crop.top / 100);
 
@@ -1363,6 +1680,7 @@ export default function PlanarApp() {
         );
       }
     } else {
+      // Tiled & Maximise Modes
       const pitchW = paperWidth - gluingMargin;
       const pitchH = paperHeight - gluingMargin;
 
@@ -1468,7 +1786,7 @@ export default function PlanarApp() {
         >
           {/* Calibration active banner */}
           {isCalibrationActive && selectedImage && (
-            <div className="banner calibration-banner" onClick={(e) => e.stopPropagation()}>
+            <div className="banner calibration-banner" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
               <Ruler size={16} className="upload-icon" style={{ margin: 0, color: "var(--accent-color)" }} />
               <div>
                 <span className="banner-title">Calibrating physical dimensions</span>
@@ -1512,12 +1830,12 @@ export default function PlanarApp() {
 
           {/* Background removal loading overlay */}
           {bgRemovalProgress !== null && (
-            <div className="banner" onClick={(e) => e.stopPropagation()}>
+            <div className="banner" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
               <RefreshCw size={14} className="animate-spin" style={{ animation: "spin 2s linear infinite" }} />
               <div>
                 <span className="banner-title">Removing Background...</span>
                 <p style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
-                  Downloading AI model: {bgRemovalProgress}%
+                  Downloading RemBG model: {bgRemovalProgress}%
                 </p>
               </div>
             </div>
@@ -1525,7 +1843,7 @@ export default function PlanarApp() {
 
           {/* Cropping Active Guide Banner */}
           {croppingImageId && selectedImage && (
-            <div className="banner" onClick={(e) => e.stopPropagation()} style={{ borderColor: "var(--accent-color)" }}>
+            <div className="banner" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} style={{ borderColor: "var(--accent-color)" }}>
               <Crop size={16} style={{ color: "var(--accent-color)" }} />
               <div>
                 <span className="banner-title">Cropping Mode Active</span>
@@ -1544,157 +1862,167 @@ export default function PlanarApp() {
           )}
 
           {/* Zoom Controls */}
-          <div className="zoom-controls" onClick={(e) => e.stopPropagation()}>
+          <div className="zoom-controls" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
             <button className="zoom-btn" onClick={handleZoomIn} title="Zoom In"><Plus size={14} /></button>
             <button className="zoom-btn" onClick={handleZoomOut} title="Zoom Out"><Minus size={14} /></button>
             <button className="zoom-btn" style={{ fontSize: "9px" }} onClick={handleZoomReset} title="Reset Zoom">FIT</button>
           </div>
 
-          {/* Pasteboard Wrapper */}
-          <div 
-            className="workspace-pasteboard"
-            ref={pasteboardRef}
-            onClick={(e) => e.stopPropagation()}
+          {/* Scroll Wrapper to ensure correct overflow sizes */}
+          <div
+            className="workspace-scroll-wrapper"
             style={{
-              transform: `scale(${zoom})`,
-              width: `${totalWidth * PX_PER_MM}px`,
-              height: `${totalHeight * PX_PER_MM}px`,
+              width: `${(totalWidth + 80) * PX_PER_MM * zoom}px`,
+              height: `${(totalHeight + 80) * PX_PER_MM * zoom}px`,
+              position: "relative",
             }}
           >
-            {/* Sheets Preview Layer */}
-            {renderSheets()}
+            {/* Pasteboard Wrapper */}
+            <div 
+              className="workspace-pasteboard"
+              ref={pasteboardRef}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                transform: `scale(${zoom})`,
+                transformOrigin: "0 0",
+                width: `${totalWidth * PX_PER_MM}px`,
+                height: `${totalHeight * PX_PER_MM}px`,
+                position: "absolute",
+                left: `${40 * PX_PER_MM * zoom}px`,
+                top: `${40 * PX_PER_MM * zoom}px`,
+              }}
+            >
+              {/* Sheets Preview Layer */}
+              {renderSheets()}
 
-            {/* Images Workspace Layer */}
-            <div className="canvas-layer">
-              {images.map((img) => {
-                const isSelected = img.id === selectedImageId;
-                const isCropping = img.id === croppingImageId;
+              {/* Images Workspace Layer */}
+              <div className="canvas-layer">
+                {images.map((img) => {
+                  const isSelected = img.id === selectedImageId;
+                  const isCropping = img.id === croppingImageId;
 
-                const { w: visibleW, h: visibleH } = getImageVisibleSize(img);
+                  const { w: visibleW, h: visibleH } = getImageVisibleSize(img);
 
-                // CSS wrapper dimensions match the CROPPED/VISIBLE physical bounds exactly
-                const widthCss = visibleW;
-                const heightCss = visibleH;
+                  const widthCss = visibleW;
+                  const heightCss = visibleH;
 
-                // Scaling ratios to size the uncropped image inside the wrapper box
-                const scaleW = 100 - img.crop.left - img.crop.right;
-                const scaleH = 100 - img.crop.top - img.crop.bottom;
-                const imageWidthPct = (100 / scaleW) * 100;
-                const imageHeightPct = (100 / scaleH) * 100;
+                  const scaleW = 100 - img.crop.left - img.crop.right;
+                  const scaleH = 100 - img.crop.top - img.crop.bottom;
+                  const imageWidthPct = (100 / scaleW) * 100;
+                  const imageHeightPct = (100 / scaleH) * 100;
 
-                // Left & top translation offsets in percent relative to full image
-                const offsetXPct = -(img.crop.left / scaleW) * 100;
-                const optionsYPct = -(img.crop.top / scaleH) * 100;
+                  const offsetXPct = -(img.crop.left / scaleW) * 100;
+                  const optionsYPct = -(img.crop.top / scaleH) * 100;
 
-                const clipPathStyle = getImageClipPath(img.crop);
+                  const clipPathStyle = getImageClipPath(img.crop);
 
-                return (
-                  <div
-                    key={img.id}
-                    id={`img-wrap-${img.id}`}
-                    className={`image-wrapper ${isSelected ? "selected" : ""}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!isCalibrationActive && !isCropping) setSelectedImageId(img.id);
-                    }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      if (!isCalibrationActive) startCropping(img.id);
-                    }}
-                    onMouseDown={(e) => handleImageMouseDown(e, img, "drag")}
-                    style={{
-                      left: `${img.x * PX_PER_MM}px`,
-                      top: `${img.y * PX_PER_MM}px`,
-                      width: `${widthCss * PX_PER_MM}px`,
-                      height: `${heightCss * PX_PER_MM}px`,
-                      transform: `rotate(${img.rotation}deg)`,
-                      overflow: isCropping ? "visible" : "hidden",
-                      clipPath: isCropping ? "none" : clipPathStyle,
-                    }}
-                    title={isCropping ? "Cropping mode active" : "Double click to crop image"}
-                  >
+                  return (
                     <div
+                      key={img.id}
+                      id={`img-wrap-${img.id}`}
+                      className={`image-wrapper ${isSelected ? "selected" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!isCalibrationActive && !isCropping) setSelectedImageId(img.id);
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        if (!isCalibrationActive) startCropping(img.id);
+                      }}
+                      onMouseDown={(e) => handleImageMouseDown(e, img, "drag")}
+                      onTouchStart={(e) => handleImageTouchStart(e, img, "drag")}
                       style={{
-                        position: "relative",
+                        left: `${img.x * PX_PER_MM}px`,
+                        top: `${img.y * PX_PER_MM}px`,
                         width: `${widthCss * PX_PER_MM}px`,
                         height: `${heightCss * PX_PER_MM}px`,
-                        pointerEvents: isCalibrationActive && isSelected ? "auto" : "none",
+                        transform: `rotate(${img.rotation}deg)`,
+                        overflow: isCropping ? "visible" : "hidden",
+                        clipPath: isCropping ? "none" : clipPathStyle,
                       }}
-                      onClick={isCalibrationActive && isSelected ? handleCalibrationClick : undefined}
+                      title={isCropping ? "Cropping mode active" : "Double click to crop image"}
                     >
-                      {/* Dimmed uncropped background image (visible ONLY in Cropping Mode) */}
-                      {isCropping && (
-                        /* eslint-disable-next-line @next/next/no-img-element */
-                        <img 
-                          src={img.src} 
-                          alt="uncropped background" 
+                      <div
+                        style={{
+                          position: "relative",
+                          width: `${widthCss * PX_PER_MM}px`,
+                          height: `${heightCss * PX_PER_MM}px`,
+                          pointerEvents: isCalibrationActive && isSelected ? "auto" : "none",
+                        }}
+                        onClick={isCalibrationActive && isSelected ? handleCalibrationClick : undefined}
+                      >
+                        {isCropping && (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img 
+                            src={img.src} 
+                            alt="uncropped background" 
+                            style={{
+                              position: "absolute",
+                              left: `${offsetXPct}%`,
+                              top: `${optionsYPct}%`,
+                              width: `${imageWidthPct}%`,
+                              height: `${imageHeightPct}%`,
+                              opacity: 0.35,
+                              zIndex: -1,
+                            }}
+                          />
+                        )}
+
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={img.src}
+                          className="image-content"
+                          alt={img.name}
                           style={{
-                            position: "absolute",
-                            left: `${offsetXPct}%`,
-                            top: `${optionsYPct}%`,
                             width: `${imageWidthPct}%`,
                             height: `${imageHeightPct}%`,
-                            opacity: 0.35,
-                            zIndex: -1,
+                            marginLeft: `${offsetXPct}%`,
+                            marginTop: `${optionsYPct}%`,
+                            clipPath: isCropping ? clipPathStyle : "none",
+                            opacity: isCalibrationActive && !isSelected ? 0.4 : 1,
                           }}
                         />
+
+                        {isCropping && (
+                          <div className="crop-guide-lines" />
+                        )}
+
+                        {isCalibrationActive && isSelected && calibrationPoints.map((pt, idx) => (
+                          <div
+                            key={`pt-${idx}`}
+                            className="calibration-point"
+                            style={{
+                              left: `${pt.x * 100}%`,
+                              top: `${pt.y * 100}%`,
+                            }}
+                          >
+                            {idx === 0 ? "A" : "B"}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Resizing and rotation control handles */}
+                      {isSelected && !isCalibrationActive && !isCropping && (
+                        <>
+                          <div 
+                            className="resize-handle br"
+                            onMouseDown={(e) => handleImageMouseDown(e, img, "resize")}
+                            onTouchStart={(e) => handleImageTouchStart(e, img, "resize")}
+                          />
+                          <div 
+                            className="rotate-handle"
+                            onMouseDown={(e) => handleImageMouseDown(e, img, "rotate")}
+                            onTouchStart={(e) => handleImageTouchStart(e, img, "rotate")}
+                            title="Drag to rotate, Shift to snap 45°"
+                          >
+                            <RotateCw size={10} style={{ color: "var(--text-main)" }} />
+                          </div>
+                        </>
                       )}
-
-                      {/* Foreground cropped visible image */}
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={img.src}
-                        className="image-content"
-                        alt={img.name}
-                        style={{
-                          width: `${imageWidthPct}%`,
-                          height: `${imageHeightPct}%`,
-                          marginLeft: `${offsetXPct}%`,
-                          marginTop: `${optionsYPct}%`,
-                          clipPath: isCropping ? clipPathStyle : "none",
-                          opacity: isCalibrationActive && !isSelected ? 0.4 : 1,
-                        }}
-                      />
-
-                      {/* Rule of thirds visual overlay dashes (only when cropping) */}
-                      {isCropping && (
-                        <div className="crop-guide-lines" />
-                      )}
-
-                      {/* Calibration points indicator crosshairs */}
-                      {isCalibrationActive && isSelected && calibrationPoints.map((pt, idx) => (
-                        <div
-                          key={`pt-${idx}`}
-                          className="calibration-point"
-                          style={{
-                            left: `${pt.x * 100}%`,
-                            top: `${pt.y * 100}%`,
-                          }}
-                        >
-                          {idx === 0 ? "A" : "B"}
-                        </div>
-                      ))}
                     </div>
-
-                    {/* Resizing and rotation control handles */}
-                    {isSelected && !isCalibrationActive && !isCropping && (
-                      <>
-                        <div 
-                          className="resize-handle br"
-                          onMouseDown={(e) => handleImageMouseDown(e, img, "resize")}
-                        />
-                        <div 
-                          className="rotate-handle"
-                          onMouseDown={(e) => handleImageMouseDown(e, img, "rotate")}
-                          title="Drag to rotate, Shift to snap 45°"
-                        >
-                          <RotateCw size={10} style={{ color: "var(--text-main)" }} />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
 
@@ -1706,7 +2034,7 @@ export default function PlanarApp() {
           </div>
         </div>
 
-        {/* Sidebar Panel - Context-Aware Options */}
+        {/* Sidebar Panel */}
         <aside className="sidebar">
           {selectedImage && croppingImageId === selectedImage.id ? (
             /* IMAGE CROPPING OPTIONS */
@@ -1760,7 +2088,6 @@ export default function PlanarApp() {
                     </select>
                   </div>
 
-                  {/* Rectangle Corner radius / Fillet */}
                   {selectedImage.crop.shape === "rectangle" && (
                     <div className="input-group">
                       <label className="input-label">Fillet Corner Radius ({getUnitSymbol()})</label>
@@ -1786,7 +2113,6 @@ export default function PlanarApp() {
                     </div>
                   )}
 
-                  {/* Star Points count and inner ratio */}
                   {selectedImage.crop.shape === "star" && (
                     <div className="settings-grid">
                       <div className="input-group">
@@ -1833,7 +2159,6 @@ export default function PlanarApp() {
                     </div>
                   )}
 
-                  {/* Polygon sides count */}
                   {selectedImage.crop.shape === "polygon" && (
                     <div className="input-group">
                       <label className="input-label">Vertices (Polygon Sides)</label>
@@ -1860,7 +2185,7 @@ export default function PlanarApp() {
                 </div>
               </section>
 
-              {/* Crop border offsets (using percentages) */}
+              {/* Crop border offsets */}
               <section className="sidebar-section">
                 <h2 className="sidebar-section-title">Crop Boundaries</h2>
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -2043,7 +2368,7 @@ export default function PlanarApp() {
                 <h2 className="sidebar-section-title">Processing & Crop</h2>
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                   
-                  {/* Crop Trigger Button */}
+                  {/* Crop Trigger */}
                   <button 
                     className="btn btn-secondary" 
                     onClick={() => startCropping(selectedImage.id)}
@@ -2052,7 +2377,7 @@ export default function PlanarApp() {
                     Crop Image Bounds
                   </button>
 
-                  {/* Bounding box tight transparent clip */}
+                  {/* Bounding box clip */}
                   {selectedImage.mimeType === "image/png" && selectedImage.bounds && (
                     <label className="checkbox-container">
                       <input
@@ -2095,7 +2420,7 @@ export default function PlanarApp() {
                       disabled={isBgRemovalProcessing}
                     >
                       <RefreshCw size={14} style={{ animation: isBgRemovalProcessing ? "spin 2s linear infinite" : "none" }} />
-                      Remove Background (rembg AI)
+                      Remove Background (RemBG)
                     </button>
                   )}
 
@@ -2116,7 +2441,7 @@ export default function PlanarApp() {
                 </button>
               </section>
 
-              {/* About author section */}
+              {/* About footer */}
               <footer className="about-footer">
                 <div className="about-author">Made with ❤️ by Mason Chen</div>
                 <div className="about-links">
@@ -2193,28 +2518,21 @@ export default function PlanarApp() {
                       <select 
                         className="select-field" 
                         value={layoutMode} 
-                        onChange={(e) => setLayoutMode(e.target.value as "flow" | "tiled")}
+                        onChange={(e) => {
+                          const nextMode = e.target.value as "flow" | "tiled" | "maximise";
+                          setLayoutMode(nextMode);
+                          if (nextMode === "maximise") {
+                            setTimeout(() => maximiseImagesToPaperGrid(), 50);
+                          }
+                        }}
                       >
                         <option value="flow">Flow (Separate Sheets)</option>
                         <option value="tiled">Gluing Grid (Tiled)</option>
+                        <option value="maximise">Maximise (Fill Paper Grid)</option>
                       </select>
                     </div>
                     
-                    {layoutMode === "tiled" ? (
-                      <div className="input-group">
-                        <label className="input-label">Gluing Overlap ({getUnitSymbol()})</label>
-                        <input
-                          type="number"
-                          step="any"
-                          className="input-field"
-                          value={Number(convertMmToActiveUnit(gluingMargin).toFixed(2))}
-                          onChange={(e) => {
-                            const val = parseFloat(e.target.value);
-                            if (!isNaN(val)) setGluingMargin(convertActiveUnitToMm(val));
-                          }}
-                        />
-                      </div>
-                    ) : (
+                    {layoutMode === "flow" ? (
                       <div className="input-group">
                         <label className="input-label">Print Margin ({getUnitSymbol()})</label>
                         <input
@@ -2228,10 +2546,59 @@ export default function PlanarApp() {
                           }}
                         />
                       </div>
+                    ) : (
+                      <div className="input-group">
+                        <label className="input-label">Gluing Overlap ({getUnitSymbol()})</label>
+                        <input
+                          type="number"
+                          step="any"
+                          className="input-field"
+                          value={Number(convertMmToActiveUnit(gluingMargin).toFixed(2))}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            if (!isNaN(val)) setGluingMargin(convertActiveUnitToMm(val));
+                          }}
+                        />
+                      </div>
                     )}
                   </div>
 
-                  {layoutMode === "tiled" && (
+                  {/* Fixed paper grid columns / rows inputs for Maximise Mode */}
+                  {layoutMode === "maximise" && (
+                    <div className="settings-grid">
+                      <div className="input-group">
+                        <label className="input-label">Max Columns (X)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          className="input-field"
+                          value={maxCols}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            if (!isNaN(val) && val > 0) setMaxCols(val);
+                          }}
+                        />
+                      </div>
+                      <div className="input-group">
+                        <label className="input-label">Max Rows (Y)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          className="input-field"
+                          value={maxRows}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            if (!isNaN(val) && val > 0) setMaxRows(val);
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Printable/gluing guides toggle */}
+                  {layoutMode !== "flow" && (
                     <label className="checkbox-container" style={{ marginTop: "4px" }}>
                       <input
                         type="checkbox"
@@ -2246,14 +2613,32 @@ export default function PlanarApp() {
                     </label>
                   )}
 
-                  {layoutMode === "tiled" && pagesCount > 1 && (
+                  {/* Print safe margin input for Tiled / Maximise modes */}
+                  {layoutMode !== "flow" && (
+                    <div className="input-group">
+                      <label className="input-label">Print Margin ({getUnitSymbol()})</label>
+                      <input
+                        type="number"
+                        step="any"
+                        className="input-field"
+                        value={Number(convertMmToActiveUnit(sheetMargin).toFixed(2))}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!isNaN(val)) setSheetMargin(convertActiveUnitToMm(val));
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* Gluing sheet count warning */}
+                  {layoutMode !== "flow" && pagesCount > 1 && (
                     <div className="badge-warning">
                       <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                         <AlertCircle size={14} style={{ color: "var(--accent-color)" }} />
                         <span className="badge-warning-title">Tiled Grid Layout</span>
                       </div>
                       <span className="badge-warning-desc">
-                        Image exceeds paper size. Splitting across <strong>{pagesCount}</strong> ({cols} × {rows}) sheets. Glued borders are colored on screen.
+                        Poster grid spans <strong>{pagesCount}</strong> ({cols} × {rows}) sheets. Gluing margins and borders are colored on screen.
                       </span>
                     </div>
                   )}
@@ -2299,7 +2684,7 @@ export default function PlanarApp() {
                         <div className="image-card-info">
                           <div className="image-card-name">{img.name}</div>
                           <div className="image-card-meta">
-                            {Number(convertMmToActiveUnit(getImageVisibleSize(img).w).toFixed(1))} × {Number(convertMmToActiveUnit(getImageVisibleSize(img).h).toFixed(1))} {getUnitSymbol()}
+                            {Number(convertMmToActiveUnit(getImageLayoutSize(img).w).toFixed(1))} × {Number(convertMmToActiveUnit(getImageLayoutSize(img).h).toFixed(1))} {getUnitSymbol()}
                           </div>
                           <span style={{ fontSize: "8px", textTransform: "uppercase", color: "var(--text-muted)", display: "block", marginTop: "2px" }}>Click to resize / edit</span>
                         </div>
@@ -2337,27 +2722,41 @@ export default function PlanarApp() {
                     Hold <strong>Space + drag</strong> or use trackpad to pan around the workspace. Pinch trackpad or hold <strong>Ctrl + scroll wheel</strong> to zoom. Double-click image to crop.
                   </p>
 
-                  <label className="checkbox-container">
-                    <input
-                      type="checkbox"
-                      className="visually-hidden"
-                      checked={allowRotation}
-                      onChange={(e) => setAllowRotation(e.target.checked)}
-                    />
-                    <div className="checkbox-custom">
-                      {allowRotation && <Check size={10} strokeWidth={3} />}
-                    </div>
-                    <span>Allow 90° image rotation to conserve space</span>
-                  </label>
+                  {layoutMode === "maximise" ? (
+                    <button 
+                      className="btn btn-secondary" 
+                      onClick={maximiseImagesToPaperGrid}
+                      disabled={images.length === 0}
+                      style={{ borderColor: "var(--accent-color)" }}
+                    >
+                      <Maximize2 size={14} />
+                      Scale to Maximise ({maxCols}x{maxRows} Grid)
+                    </button>
+                  ) : (
+                    <>
+                      <label className="checkbox-container">
+                        <input
+                          type="checkbox"
+                          className="visually-hidden"
+                          checked={allowRotation}
+                          onChange={(e) => setAllowRotation(e.target.checked)}
+                        />
+                        <div className="checkbox-custom">
+                          {allowRotation && <Check size={10} strokeWidth={3} />}
+                        </div>
+                        <span>Allow 90° image rotation to conserve space</span>
+                      </label>
 
-                  <button 
-                    className="btn btn-secondary" 
-                    onClick={handleDistributeClick}
-                    disabled={images.length === 0}
-                  >
-                    <Grid size={14} />
-                    Distribute (Auto arrange)
-                  </button>
+                      <button 
+                        className="btn btn-secondary" 
+                        onClick={() => setImages((prev) => distributeImagesList(prev))}
+                        disabled={images.length === 0}
+                      >
+                        <Grid size={14} />
+                        Distribute (Auto arrange)
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -2416,6 +2815,7 @@ export default function PlanarApp() {
                   </a>
                 </div>
               </footer>
+
             </div>
           )}
         </aside>

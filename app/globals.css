@@ -165,21 +165,19 @@ html, body {
   background-color: var(--bg-canvas);
   overflow: auto;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 80px;
   height: 100%;
   width: 100%;
-  cursor: grab;
+  cursor: default;
 }
 
-.workspace-container:active {
-  cursor: grabbing;
+.workspace-scroll-wrapper {
+  margin: auto;
+  position: relative;
 }
 
 .workspace-pasteboard {
-  position: relative;
-  transform-origin: center center;
+  position: absolute;
+  transform-origin: 0 0;
   transition: transform 0.15s ease;
   box-shadow: 0 10px 40px rgba(0,0,0,0.12);
   border-radius: 4px;
@@ -988,3 +986,65 @@ select option {
 .about-link:hover {
   color: var(--text-main);
 }
+
+/* Mobile Responsive Overrides */
+@media (max-width: 768px) {
+  .main-content {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: 52vh 48vh !important;
+    height: calc(100vh - 48px);
+  }
+
+  .workspace-container {
+    height: 100%;
+    width: 100%;
+  }
+
+  .sidebar {
+    border-left: none !important;
+    border-top: 1px solid var(--border-main);
+    height: 100%;
+  }
+
+  .app-header {
+    padding: 0 10px !important;
+  }
+
+  .logo-section {
+    font-size: 1rem;
+    gap: 6px;
+  }
+
+  .header-controls {
+    gap: 8px;
+  }
+
+  .segment-btn {
+    padding: 3px 6px;
+    font-size: 0.75rem;
+  }
+
+  .step-group {
+    padding: 14px 12px !important;
+  }
+
+  .step-number {
+    font-size: 1.8rem;
+    top: 12px;
+    right: 12px;
+  }
+
+  .sidebar-section {
+    padding: 12px !important;
+  }
+
+  .btn {
+    padding: 8px 10px !important;
+    font-size: 0.8rem;
+  }
+
+  .about-footer {
+    padding: 12px !important;
+  }
+}
+
