@@ -15,10 +15,11 @@ import {
   Check, 
   AlertCircle,
   Scissors,
-  FileImage,
   RefreshCw,
-  Scaling,
-  Maximize2
+  ArrowLeft,
+  Settings,
+  Crop,
+  Layers
 } from "lucide-react";
 
 // Types
@@ -95,6 +96,9 @@ const inToMm = (inch: number) => inch * 25.4;
 const mmToCm = (mm: number) => mm / 10;
 const cmToMm = (cm: number) => cm * 10;
 
+// Rendering display scaling factor (1mm = 2.5px in CSS workspace)
+const PX_PER_MM = 2.5;
+
 export default function PlanarApp() {
   // Theme state
   const [theme, setTheme] = useState<"light" | "dark">("dark");
@@ -109,6 +113,7 @@ export default function PlanarApp() {
   const [gluingMargin, setGluingMargin] = useState<number>(10); // in mm
   const [layoutMode, setLayoutMode] = useState<"flow" | "tiled">("flow");
   const [allowRotation, setAllowRotation] = useState<boolean>(false);
+  const [showOverlapGuides, setShowOverlapGuides] = useState<boolean>(true);
 
   // Workspace and UI states
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -166,6 +171,19 @@ export default function PlanarApp() {
     }
   }, []);
 
+  // Before unload unsaved warning
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (images.length > 0) {
+        e.preventDefault();
+        e.returnValue = "Your work may not be saved. Are you sure you want to leave?";
+        return e.returnValue;
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [images]);
+
   const toggleTheme = () => {
     const nextTheme = theme === "light" ? "dark" : "light";
     setTheme(nextTheme);
@@ -216,8 +234,6 @@ export default function PlanarApp() {
         const dataUrl = e.target?.result as string;
         const img = new Image();
         img.onload = () => {
-          // Convert pixels to an initial physical size (defaulting to 72 DPI or fitting inside the page)
-          // 72 DPI => 1px = 25.4 / 72 mm ~ 0.3528 mm
           const pxToMm = 0.3528;
           let initialW = img.naturalWidth * pxToMm;
           let initialH = img.naturalHeight * pxToMm;
@@ -242,7 +258,7 @@ export default function PlanarApp() {
             targetHeight: initialH,
             useImageBounds: false,
             bounds: null,
-            x: sheetMargin + Math.random() * 10, // slight offset to prevent exact overlap
+            x: sheetMargin + Math.random() * 10,
             y: sheetMargin + Math.random() * 10,
             rotation: 0,
             mimeType: file.type,
@@ -253,10 +269,8 @@ export default function PlanarApp() {
           if (file.type === "image/png") {
             getImageBounds(img).then((bounds) => {
               newImg.bounds = bounds;
-              // Add to state
               setImages((prev) => {
                 const next = [...prev, newImg];
-                // Auto distribute on import
                 return distributeImagesList(next);
               });
             });
@@ -294,7 +308,7 @@ export default function PlanarApp() {
         for (let y = 0; y < h; y++) {
           for (let x = 0; x < w; x++) {
             const alpha = data[(y * w + x) * 4 + 3];
-            if (alpha > 10) { // Transparency threshold
+            if (alpha > 10) {
               if (x < minX) minX = x;
               if (x > maxX) maxX = x;
               if (y < minY) minY = y;
@@ -336,7 +350,6 @@ export default function PlanarApp() {
     setIsBgRemovalProcessing(true);
     setBgRemovalProgress(0);
     try {
-      // Dynamically import the background removal library to prevent SSR issues
       const { removeBackground } = await import("@imgly/background-removal");
       
       const config = {
@@ -346,15 +359,12 @@ export default function PlanarApp() {
         }
       };
 
-      // Fetch blob
       const response = await fetch(image.originalSrc);
       const blob = await response.blob();
 
-      // Process
       const transparentBlob = await removeBackground(blob, config);
       const transparentUrl = URL.createObjectURL(transparentBlob);
 
-      // Create temporary image element to get bounds
       const tempImg = new Image();
       tempImg.onload = () => {
         getImageBounds(tempImg).then((bounds) => {
@@ -366,7 +376,6 @@ export default function PlanarApp() {
                     src: transparentUrl,
                     bounds: bounds,
                     backgroundRemoved: true,
-                    // If background removed, it has transparency, so default enable "Use image bounds"
                     useImageBounds: !!bounds,
                   }
                 : img
@@ -410,17 +419,14 @@ export default function PlanarApp() {
     const physicalDistInput = parseFloat(calibrationDistance);
     if (isNaN(physicalDistInput) || physicalDistInput <= 0) return;
 
-    // Convert input distance to mm
     const physicalDistMm = convertActiveUnitToMm(physicalDistInput);
 
-    // Calculate pixel coordinates of points A and B
     const pt1 = calibrationPoints[0];
     const pt2 = calibrationPoints[1];
 
     let wPx = selectedImage.width;
     let hPx = selectedImage.height;
 
-    // If using image bounds, the calibration clicks are on the cropped boundary box
     if (selectedImage.useImageBounds && selectedImage.bounds) {
       wPx = selectedImage.bounds.w;
       hPx = selectedImage.bounds.h;
@@ -434,11 +440,8 @@ export default function PlanarApp() {
     const dx = x2 - x1;
     const dy = y2 - y1;
     const pixelDist = Math.sqrt(dx * dx + dy * dy);
-
-    // physical scale: mm per pixel
     const scale = physicalDistMm / pixelDist;
 
-    // Apply scale to natural image dimensions to calculate target physical width & height
     const targetW = selectedImage.width * scale;
     const targetH = selectedImage.height * scale;
 
@@ -454,7 +457,6 @@ export default function PlanarApp() {
       )
     );
 
-    // Exit calibration
     setIsCalibrationActive(false);
     setCalibrationPoints([]);
     setCalibrationDistance("");
@@ -462,34 +464,26 @@ export default function PlanarApp() {
 
   // Page layout boundaries
   const getLayoutDimensions = () => {
-    // If empty images, return a single page size
     if (images.length === 0) {
       return { totalWidth: paperWidth, totalHeight: paperHeight, cols: 1, rows: 1, pagesCount: 1 };
     }
 
     if (layoutMode === "flow") {
-      // Flow Mode: Pages stacked vertically
-      // Find maximum pageIndex required
       const maxPageIndex = images.reduce((max, img) => {
-        // If image is larger than sheet, it might overflow, but in Flow Mode we distribute on single sheets
-        // We will compute the layout page index dynamically.
         return Math.max(max, getImgPageIndex(img));
       }, 0);
       const pagesCount = maxPageIndex + 1;
       return {
         totalWidth: paperWidth,
-        totalHeight: pagesCount * paperHeight + (pagesCount - 1) * 10, // 10mm gap visual padding
+        totalHeight: pagesCount * paperHeight,
         cols: 1,
         rows: pagesCount,
         pagesCount
       };
     } else {
-      // Tiled Grid Mode: Sheets aligned adjacently with gluing overlap
-      // The pitch width & height is paper size minus gluing margin
       const pitchW = paperWidth - gluingMargin;
       const pitchH = paperHeight - gluingMargin;
 
-      // Find max coordinates of placed images
       let maxRight = paperWidth;
       let maxBottom = paperHeight;
 
@@ -500,8 +494,6 @@ export default function PlanarApp() {
         if (bottomEdge > maxBottom) maxBottom = bottomEdge;
       });
 
-      // Bounding box cols & rows
-      // Guard against exact borders with -0.1mm buffer
       const cols = Math.max(1, Math.ceil((maxRight - 0.1) / pitchW));
       const rows = Math.max(1, Math.ceil((maxBottom - 0.1) / pitchH));
       const pagesCount = cols * rows;
@@ -516,11 +508,7 @@ export default function PlanarApp() {
     }
   };
 
-  // Helper to find page index of an image in flow layout (where page pitch is paperHeight)
   const getImgPageIndex = (img: ImageItem): number => {
-    // In Flow mode, images have coordinates (x, y) relative to their specific page.
-    // Let's divide by paperHeight to see which page it belongs to if y is absolute,
-    // but in our implementation, images are stored in a continuous canvas where page i occupies y from i * paperHeight to i * paperHeight + paperHeight.
     return Math.floor(img.y / paperHeight);
   };
 
@@ -530,14 +518,11 @@ export default function PlanarApp() {
   const distributeImagesList = (items: ImageItem[]): ImageItem[] => {
     if (items.length === 0) return items;
 
-    // Clean margin and spacing
     const margin = sheetMargin;
-    const spacing = 3; // 3mm gap between packed images
+    const spacing = 3; 
     const printableW = paperWidth - 2 * margin;
     const printableH = paperHeight - 2 * margin;
 
-    // Filter large images that exceed a single page's printable size (even rotated)
-    // These large images are centered or kept at (margin, margin) spanning across pages
     const normalImages = items.filter((img) => {
       const w = img.useImageBounds && img.bounds ? img.bounds.w * (img.targetWidth / img.width) : img.targetWidth;
       const h = img.useImageBounds && img.bounds ? img.bounds.h * (img.targetHeight / img.height) : img.targetHeight;
@@ -546,7 +531,6 @@ export default function PlanarApp() {
 
     const largeImages = items.filter((img) => !normalImages.includes(img));
 
-    // Sort normal images by area (largest first)
     const sortedNormal = [...normalImages].sort((a, b) => {
       const wA = a.useImageBounds && a.bounds ? a.bounds.w * (a.targetWidth / a.width) : a.targetWidth;
       const hA = a.useImageBounds && a.bounds ? a.bounds.h * (a.targetHeight / a.height) : a.targetHeight;
@@ -555,35 +539,29 @@ export default function PlanarApp() {
       return (wB * hB) - (wA * hA);
     });
 
-    // We will place normal images sheet-by-sheet (pageIndex 0, 1, 2...)
     interface PlacedRect {
       x: number;
       y: number;
       w: number;
       h: number;
     }
-    const pagePlacements: PlacedRect[][] = [[]]; // placed rects per page index
+    const pagePlacements: PlacedRect[][] = [[]];
 
     const positionedNormal = sortedNormal.map((img) => {
       const imgW = img.useImageBounds && img.bounds ? img.bounds.w * (img.targetWidth / img.width) : img.targetWidth;
       const imgH = img.useImageBounds && img.bounds ? img.bounds.h * (img.targetHeight / img.height) : img.targetHeight;
 
-      // Try to fit on existing pages
       for (let pageIdx = 0; pageIdx < pagePlacements.length; pageIdx++) {
         const placed = pagePlacements[pageIdx];
         const fitPos = findSpace(imgW, imgH, printableW, printableH, placed, margin, spacing, allowRotation);
         if (fitPos) {
           placed.push({ x: fitPos.x, y: fitPos.y, w: fitPos.w, h: fitPos.h });
           
-          // Image absolute position on pasteboard:
-          // X: fitPos.x (plus bounding box offset if using cropped bounds)
-          // Y: pageIdx * paperHeight + fitPos.y (plus padding in Flow Mode, but absolute layout coordinate is continuous)
           let absX = fitPos.x;
           let absY = (layoutMode === "flow") 
             ? pageIdx * paperHeight + fitPos.y 
-            : fitPos.y; // in Tiled mode, they all live in a single 2D grid, but we will pack in Page 0 (0,0) first.
+            : fitPos.y;
           
-          // Adjust offset if using cropped bounding box
           if (img.useImageBounds && img.bounds) {
             const ratioX = img.targetWidth / img.width;
             const ratioY = img.targetHeight / img.height;
@@ -600,7 +578,6 @@ export default function PlanarApp() {
         }
       }
 
-      // Fit on a new page
       const newPageIdx = pagePlacements.length;
       pagePlacements.push([]);
       const placed = pagePlacements[newPageIdx];
@@ -629,9 +606,7 @@ export default function PlanarApp() {
       };
     });
 
-    // Place large images that span pages
     const positionedLarge = largeImages.map((img, idx) => {
-      // Just center or place large images at margin offset
       let absX = margin;
       let absY = (layoutMode === "flow") 
         ? idx * paperHeight + margin 
@@ -659,7 +634,6 @@ export default function PlanarApp() {
     setImages((prev) => distributeImagesList(prev));
   };
 
-  // Shelf-packing helper function
   const findSpace = (
     w: number,
     h: number,
@@ -670,21 +644,18 @@ export default function PlanarApp() {
     spacing: number,
     allowRot: boolean
   ) => {
-    // Candidates are the bottom-left and top-right corners of already placed items, plus initial (margin, margin)
     const candidates = [{ x: margin, y: margin }];
     placed.forEach((rect) => {
       candidates.push({ x: rect.x + rect.w + spacing, y: rect.y });
       candidates.push({ x: rect.x, y: rect.y + rect.h + spacing });
     });
 
-    // Sort: lowest Y, then lowest X
     candidates.sort((a, b) => {
       if (Math.abs(a.y - b.y) > 0.01) return a.y - b.y;
       return a.x - b.x;
     });
 
     for (const cand of candidates) {
-      // Check standard rotation
       if (cand.x + w <= margin + printableW && cand.y + h <= margin + printableH) {
         let overlap = false;
         for (const rect of placed) {
@@ -696,7 +667,6 @@ export default function PlanarApp() {
         if (!overlap) return { x: cand.x, y: cand.y, w, h, rotation: 0 };
       }
 
-      // Check rotated rotation
       if (allowRot) {
         if (cand.x + h <= margin + printableW && cand.y + w <= margin + printableH) {
           let overlap = false;
@@ -734,9 +704,6 @@ export default function PlanarApp() {
 
     setSelectedImageId(img.id);
 
-    // Initial scale values to convert CSS pixels back to mm
-    // The visual scale depends on zoom. If zoom = 0.8, 1mm = 0.8px in CSS coordinates or zoom scaled coordinates.
-    // Let's compute actual mouse coordinate relative to the zoom-scale pasteboard container
     const startX = e.clientX;
     const startY = e.clientY;
 
@@ -760,12 +727,9 @@ export default function PlanarApp() {
     const info = dragInfo.current;
     if (!info.type || !info.imageId) return;
 
-    // Convert mouse movement delta in pixels to mm (knowing zoom ratio)
-    // 1px on screen is (1 / zoom) CSS pixels on pasteboard.
-    // Since pasteboard coordinates are rendered directly in mm, 1mm = 1px on the scale container!
-    // So delta in mm is delta in pixels / zoom.
-    const deltaX = (e.clientX - info.startX) / zoom;
-    const deltaY = (e.clientY - info.startY) / zoom;
+    // Convert mouse movement delta in pixels to mm (knowing zoom ratio and render scaling PX_PER_MM)
+    const deltaX = (e.clientX - info.startX) / (zoom * PX_PER_MM);
+    const deltaY = (e.clientY - info.startY) / (zoom * PX_PER_MM);
 
     setImages((prev) =>
       prev.map((img) => {
@@ -775,7 +739,6 @@ export default function PlanarApp() {
           let newX = info.initialX + deltaX;
           let newY = info.initialY + deltaY;
 
-          // Constraints: stay within pasteboard boundaries
           newX = Math.max(-50, Math.min(newX, totalWidth + 50));
           newY = Math.max(-50, Math.min(newY, totalHeight + 50));
 
@@ -783,17 +746,13 @@ export default function PlanarApp() {
         } 
         
         if (info.type === "resize") {
-          // Bottom-right resizing handler
-          // Proportional resize if Shift key is not pressed
           const ratio = info.initialHeight / info.initialWidth;
           let newW = info.initialWidth + deltaX;
           let newH = info.initialHeight + deltaY;
 
-          // Keep minimum size (10mm)
           newW = Math.max(10, newW);
           newH = Math.max(10, newH);
 
-          // Default: maintain aspect ratio
           if (!e.shiftKey) {
             if (Math.abs(deltaX) > Math.abs(deltaY)) {
               newH = newW * ratio;
@@ -810,8 +769,6 @@ export default function PlanarApp() {
         }
 
         if (info.type === "rotate") {
-          // Rotate around the center of the image
-          // Let's get the center of the image in pixels/mm on screen
           const imgEl = document.getElementById(`img-wrap-${img.id}`);
           if (!imgEl) return img;
 
@@ -822,22 +779,18 @@ export default function PlanarApp() {
           const currentX = e.clientX;
           const currentY = e.clientY;
 
-          // Angle between vertical line and current cursor
           const angleRad = Math.atan2(currentY - centerY, currentX - centerX);
-          let angleDeg = (angleRad * 180) / Math.PI + 90; // Add 90 offset to align with rotate handle position
+          let angleDeg = (angleRad * 180) / Math.PI + 90;
 
-          // Snap to 45 degree steps if Shift key is held
           if (e.shiftKey) {
             angleDeg = Math.round(angleDeg / 45) * 45;
           } else {
-            // Otherwise snap to nearest 90 degrees if close (within 5 degrees)
             const nearest90 = Math.round(angleDeg / 90) * 90;
             if (Math.abs(angleDeg - nearest90) < 5) {
               angleDeg = nearest90;
             }
           }
 
-          // Normalize angle [0..360)
           angleDeg = (angleDeg + 360) % 360;
 
           return {
@@ -876,7 +829,6 @@ export default function PlanarApp() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (selectedImageId && (e.key === "Delete" || e.key === "Backspace")) {
-        // Only trigger if focus is not in an input field
         const tag = document.activeElement?.tagName.toLowerCase();
         if (tag !== "input" && tag !== "select" && tag !== "textarea") {
           e.preventDefault();
@@ -893,13 +845,11 @@ export default function PlanarApp() {
   const triggerExport = async () => {
     if (images.length === 0) return alert("Upload images to export.");
 
-    const { totalWidth: wMm, totalHeight: hMm, pagesCount: numPages } = getLayoutDimensions();
+    const { pagesCount: numPages } = getLayoutDimensions();
 
     if (exportFormat === "pdf") {
-      // Dynamic import jsPDF
       const { jsPDF } = await import("jspdf");
       
-      // jsPDF format is [width, height] in mm
       const doc = new jsPDF({
         orientation: paperWidth > paperHeight ? "landscape" : "portrait",
         unit: "mm",
@@ -908,18 +858,13 @@ export default function PlanarApp() {
 
       for (let i = 0; i < numPages; i++) {
         if (i > 0) doc.addPage([paperWidth, paperHeight]);
-        
-        // Generate page canvas
         const pageCanvas = await generatePageCanvas(i);
         const dataUrl = pageCanvas.toDataURL("image/png");
-        
-        // Draw canvas onto PDF page
         doc.addImage(dataUrl, "PNG", 0, 0, paperWidth, paperHeight, undefined, "FAST");
       }
 
       doc.save(`planar-${paperPreset}-${Date.now()}.pdf`);
     } else {
-      // Export PNG/JPG. If multi-page, package into ZIP
       if (numPages === 1) {
         const pageCanvas = await generatePageCanvas(0);
         const formatType = exportFormat === "png" ? "image/png" : "image/jpeg";
@@ -929,7 +874,6 @@ export default function PlanarApp() {
         link.href = pageCanvas.toDataURL(formatType);
         link.click();
       } else {
-        // Multi-page export => ZIP
         const JSZip = (await import("jszip")).default;
         const zip = new JSZip();
         
@@ -952,31 +896,24 @@ export default function PlanarApp() {
     }
   };
 
-  // Core canvas drawing helper used for PDF/Image Export
   const generatePageCanvas = async (pageIndex: number): Promise<HTMLCanvasElement> => {
     const canvas = document.createElement("canvas");
-    // Scale multiplier for high resolution (300 DPI: 11.81 pixels per mm)
     const renderScale = 6; 
     canvas.width = paperWidth * renderScale;
     canvas.height = paperHeight * renderScale;
     const ctx = canvas.getContext("2d");
     if (!ctx) return canvas;
 
-    // Fill background (printing is white paper)
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Compute bounding coordinates of this page in workspace space
     let pageLeft = 0;
     let pageTop = 0;
 
     if (layoutMode === "flow") {
       pageLeft = 0;
-      // In flow layout, pages are stacked vertically with visual gaps, 
-      // but print space has no gaps. Page top starts at pageIndex * paperHeight
       pageTop = pageIndex * paperHeight;
     } else {
-      // Tiled layout
       const pitchW = paperWidth - gluingMargin;
       const pitchH = paperHeight - gluingMargin;
       
@@ -989,9 +926,8 @@ export default function PlanarApp() {
       pageTop = row * pitchH;
     }
 
-    // Draw overlap gluing border dashed marks if in tiled mode
-    if (layoutMode === "tiled" && gluingMargin > 0) {
-      ctx.strokeStyle = "#999999";
+    if (layoutMode === "tiled" && gluingMargin > 0 && showOverlapGuides) {
+      ctx.strokeStyle = "#cccccc";
       ctx.lineWidth = 0.5 * renderScale;
       ctx.setLineDash([2 * renderScale, 2 * renderScale]);
 
@@ -1005,7 +941,6 @@ export default function PlanarApp() {
       const col = pageIndex % colsCount;
       const row = Math.floor(pageIndex / colsCount);
 
-      // Draw dashed guides at boundary edges where they'll overlap with adjacent papers
       if (col > 0) {
         ctx.beginPath();
         ctx.moveTo(gluingMargin * renderScale, 0);
@@ -1033,14 +968,12 @@ export default function PlanarApp() {
       ctx.setLineDash([]);
     }
 
-    // Draw images
     for (const img of images) {
       const imgW = img.targetWidth;
       const imgH = img.targetHeight;
       const imgLeft = img.x;
       const imgTop = img.y;
 
-      // Overlap check
       const intersects = 
         imgLeft < pageLeft + paperWidth &&
         imgLeft + imgW > pageLeft &&
@@ -1061,7 +994,6 @@ export default function PlanarApp() {
       const relX = imgLeft - pageLeft;
       const relY = imgTop - pageTop;
 
-      // Center transform for rotation
       const centerX = (relX + imgW / 2) * renderScale;
       const centerY = (relY + imgH / 2) * renderScale;
       ctx.translate(centerX, centerY);
@@ -1099,38 +1031,36 @@ export default function PlanarApp() {
 
   if (!mounted) return null;
 
-  // Visual grids sheets mapping helper
+  // Visual grids sheets mapping helper (applying PX_PER_MM)
   const renderSheets = () => {
     const sheets = [];
     if (layoutMode === "flow") {
-      // Flow Mode: separate pages, stacked vertically with visual padding
       for (let i = 0; i < pagesCount; i++) {
         sheets.push(
           <div 
             key={`sheet-${i}`}
             className="paper-sheet"
             style={{
-              width: `${paperWidth}px`,
-              height: `${paperHeight}px`,
+              width: `${paperWidth * PX_PER_MM}px`,
+              height: `${paperHeight * PX_PER_MM}px`,
               left: 0,
-              top: `${i * (paperHeight + 10)}px`, // 10px visual offset
+              top: `${i * (paperHeight + 10) * PX_PER_MM}px`, // 10px visual offset
             }}
           >
             {/* Draw print safe margin */}
             <div 
               className="print-safe-margin"
               style={{
-                top: `${sheetMargin}px`,
-                left: `${sheetMargin}px`,
-                right: `${sheetMargin}px`,
-                bottom: `${sheetMargin}px`,
+                top: `${sheetMargin * PX_PER_MM}px`,
+                left: `${sheetMargin * PX_PER_MM}px`,
+                right: `${sheetMargin * PX_PER_MM}px`,
+                bottom: `${sheetMargin * PX_PER_MM}px`,
               }}
             />
           </div>
         );
       }
     } else {
-      // Tiled Grid Mode: sheets fit together directly
       const pitchW = paperWidth - gluingMargin;
       const pitchH = paperHeight - gluingMargin;
 
@@ -1141,38 +1071,42 @@ export default function PlanarApp() {
               key={`sheet-${c}-${r}`}
               className="paper-sheet"
               style={{
-                width: `${paperWidth}px`,
-                height: `${paperHeight}px`,
-                left: `${c * pitchW}px`,
-                top: `${r * pitchH}px`,
+                width: `${paperWidth * PX_PER_MM}px`,
+                height: `${paperHeight * PX_PER_MM}px`,
+                left: `${c * pitchW * PX_PER_MM}px`,
+                top: `${r * pitchH * PX_PER_MM}px`,
               }}
             >
               {/* Print-safe margins */}
               <div 
                 className="print-safe-margin"
                 style={{
-                  top: `${sheetMargin}px`,
-                  left: `${sheetMargin}px`,
-                  right: `${sheetMargin}px`,
-                  bottom: `${sheetMargin}px`,
+                  top: `${sheetMargin * PX_PER_MM}px`,
+                  left: `${sheetMargin * PX_PER_MM}px`,
+                  right: `${sheetMargin * PX_PER_MM}px`,
+                  bottom: `${sheetMargin * PX_PER_MM}px`,
                 }}
               />
               
               {/* Overlap guides (gluing overlap region) */}
-              {c > 0 && (
+              {c > 0 && showOverlapGuides && (
                 <div 
                   className="gluing-margin-overlay" 
-                  style={{ top: 0, left: 0, width: `${gluingMargin}px`, height: "100%" }}
+                  style={{ top: 0, left: 0, width: `${gluingMargin * PX_PER_MM}px`, height: "100%" }}
                 >
-                  <div className="overlap-text" style={{ bottom: 2, left: 2 }}><Scissors size={8}/> gluing edge</div>
+                  <div className="overlap-label-vertical">
+                    <Scissors size={8} style={{ verticalAlign: "middle" }}/> GLUE OVERLAP
+                  </div>
                 </div>
               )}
-              {r > 0 && (
+              {r > 0 && showOverlapGuides && (
                 <div 
                   className="gluing-margin-overlay" 
-                  style={{ top: 0, left: 0, width: "100%", height: `${gluingMargin}px` }}
+                  style={{ top: 0, left: 0, width: "100%", height: `${gluingMargin * PX_PER_MM}px` }}
                 >
-                  <div className="overlap-text" style={{ top: 2, right: 2 }}><Scissors size={8}/> gluing edge</div>
+                  <div className="overlap-label-horizontal">
+                    <Scissors size={8} style={{ verticalAlign: "middle" }}/> GLUE OVERLAP
+                  </div>
                 </div>
               )}
             </div>
@@ -1213,26 +1147,27 @@ export default function PlanarApp() {
         </div>
       </header>
 
-      {/* Main Workspace Workspace + Sidebar */}
+      {/* Main Workspace Workspace + Dynamic Context Sidebar */}
       <main className="main-content" onDragOver={handleDragOver} onDrop={handleDrop}>
         {/* Center Canvas */}
         <div 
           className="workspace-container" 
           ref={workspaceRef}
           onDragLeave={handleDragLeave}
+          onClick={() => setSelectedImageId(null)}
         >
           {/* Calibration active indicator banner */}
           {isCalibrationActive && selectedImage && (
-            <div className="banner calibration-banner">
+            <div className="banner calibration-banner" onClick={(e) => e.stopPropagation()}>
               <Ruler size={16} className="upload-icon" style={{ margin: 0, color: "var(--accent-color)" }} />
               <div>
-                <span className="banner-title">Calibrating image</span>
+                <span className="banner-title">Calibrating physical dimensions</span>
                 <p style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
                   {calibrationPoints.length === 0 
-                    ? "Click Point A on the image"
+                    ? "Click Point A on the image preview"
                     : calibrationPoints.length === 1 
-                    ? "Click Point B on the image" 
-                    : "Specify physical distance below"}
+                    ? "Click Point B on the image preview" 
+                    : "Enter real-world measurement distance below"}
                 </p>
               </div>
               
@@ -1267,7 +1202,7 @@ export default function PlanarApp() {
 
           {/* Background removal loading overlay */}
           {bgRemovalProgress !== null && (
-            <div className="banner">
+            <div className="banner" onClick={(e) => e.stopPropagation()}>
               <RefreshCw size={14} className="animate-spin" style={{ animation: "spin 2s linear infinite" }} />
               <div>
                 <span className="banner-title">Removing Background...</span>
@@ -1279,20 +1214,21 @@ export default function PlanarApp() {
           )}
 
           {/* Zoom Controls */}
-          <div className="zoom-controls">
+          <div className="zoom-controls" onClick={(e) => e.stopPropagation()}>
             <button className="zoom-btn" onClick={handleZoomIn} title="Zoom In"><Plus size={14} /></button>
             <button className="zoom-btn" onClick={handleZoomOut} title="Zoom Out"><Minus size={14} /></button>
             <button className="zoom-btn" style={{ fontSize: "9px" }} onClick={handleZoomReset} title="Reset Zoom">FIT</button>
           </div>
 
-          {/* Pasteboard Wrapper */}
+          {/* Pasteboard Wrapper (scaled visually by PX_PER_MM) */}
           <div 
             className="workspace-pasteboard"
             ref={pasteboardRef}
+            onClick={(e) => e.stopPropagation()}
             style={{
               transform: `scale(${zoom})`,
-              width: `${totalWidth}px`,
-              height: `${totalHeight}px`,
+              width: `${totalWidth * PX_PER_MM}px`,
+              height: `${totalHeight * PX_PER_MM}px`,
             }}
           >
             {/* Sheets Preview Layer */}
@@ -1303,26 +1239,21 @@ export default function PlanarApp() {
               {images.map((img) => {
                 const isSelected = img.id === selectedImageId;
                 
-                // Physical dimensions in mm mapped 1-to-1 to CSS pixels in scale pasteboard
                 const widthCss = img.targetWidth;
                 const heightCss = img.targetHeight;
 
-                // Adjust bounding box render offset if crop bounds is active
                 let renderWidth = widthCss;
                 let renderHeight = heightCss;
                 let imgLeftOffset = 0;
                 let imgTopOffset = 0;
 
                 if (img.useImageBounds && img.bounds) {
-                  // Scale factor between target bounding box and original pixels
                   const scaleW = widthCss / img.bounds.w;
                   const scaleH = heightCss / img.bounds.h;
                   
-                  // Compute actual image display sizes
                   renderWidth = img.width * scaleW;
                   renderHeight = img.height * scaleH;
 
-                  // Translate negative offset
                   imgLeftOffset = -img.bounds.x * scaleW;
                   imgTopOffset = -img.bounds.y * scaleH;
                 }
@@ -1338,10 +1269,10 @@ export default function PlanarApp() {
                     }}
                     onMouseDown={(e) => handleImageMouseDown(e, img, "drag")}
                     style={{
-                      left: `${img.x}px`,
-                      top: `${img.y}px`,
-                      width: `${widthCss}px`,
-                      height: `${heightCss}px`,
+                      left: `${img.x * PX_PER_MM}px`,
+                      top: `${img.y * PX_PER_MM}px`,
+                      width: `${widthCss * PX_PER_MM}px`,
+                      height: `${heightCss * PX_PER_MM}px`,
                       transform: `rotate(${img.rotation}deg)`,
                       overflow: img.useImageBounds ? "hidden" : "visible",
                     }}
@@ -1350,8 +1281,8 @@ export default function PlanarApp() {
                     <div
                       style={{
                         position: "relative",
-                        width: img.useImageBounds ? `${widthCss}px` : "100%",
-                        height: img.useImageBounds ? `${heightCss}px` : "100%",
+                        width: img.useImageBounds ? `${widthCss * PX_PER_MM}px` : "100%",
+                        height: img.useImageBounds ? `${heightCss * PX_PER_MM}px` : "100%",
                         overflow: img.useImageBounds ? "hidden" : "visible",
                         pointerEvents: isCalibrationActive && isSelected ? "auto" : "none",
                       }}
@@ -1364,10 +1295,10 @@ export default function PlanarApp() {
                         className="image-content"
                         alt={img.name}
                         style={{
-                          width: img.useImageBounds ? `${renderWidth}px` : "100%",
-                          height: img.useImageBounds ? `${renderHeight}px` : "100%",
-                          marginLeft: img.useImageBounds ? `${imgLeftOffset}px` : "0",
-                          marginTop: img.useImageBounds ? `${imgTopOffset}px` : "0",
+                          width: img.useImageBounds ? `${renderWidth * PX_PER_MM}px` : "100%",
+                          height: img.useImageBounds ? `${renderHeight * PX_PER_MM}px` : "100%",
+                          marginLeft: img.useImageBounds ? `${imgLeftOffset * PX_PER_MM}px` : "0",
+                          marginTop: img.useImageBounds ? `${imgTopOffset * PX_PER_MM}px` : "0",
                           opacity: isCalibrationActive && !isSelected ? 0.4 : 1,
                         }}
                       />
@@ -1387,7 +1318,7 @@ export default function PlanarApp() {
                       ))}
                     </div>
 
-                    {/* Resizing and rotation control handles (visible only when selected & not calibrating) */}
+                    {/* Resizing and rotation control handles */}
                     {isSelected && !isCalibrationActive && (
                       <>
                         <div 
@@ -1399,7 +1330,7 @@ export default function PlanarApp() {
                           onMouseDown={(e) => handleImageMouseDown(e, img, "rotate")}
                           title="Drag to rotate, Shift to snap 45°"
                         >
-                          <RotateCw size={10} />
+                          <RotateCw size={10} style={{ color: "var(--text-main)" }} />
                         </div>
                       </>
                     )}
@@ -1418,343 +1349,408 @@ export default function PlanarApp() {
           </div>
         </div>
 
-        {/* Sidebar Controls (Right) */}
-        <aside className="sidebar" onClick={() => setSelectedImageId(null)}>
-          {/* Paper Settings */}
-          <section className="sidebar-section" onClick={(e) => e.stopPropagation()}>
-            <h2 className="sidebar-section-title">Paper Size</h2>
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              <div className="input-group">
-                <label className="input-label">Select Preset</label>
-                <select className="select-field" value={paperPreset} onChange={handlePresetChange}>
-                  {Object.keys(PAPER_PRESETS).map((key) => (
-                    <option key={key} value={key}>
-                      {PAPER_PRESETS[key].name}
-                    </option>
-                  ))}
-                  <option value="custom">Custom Size...</option>
-                </select>
+        {/* Sidebar Panel - Context-Aware Layout */}
+        <aside className="sidebar">
+          {selectedImage ? (
+            /* IMAGE EDITING PANEL - Shifting focus when an image is active */
+            <div className="sidebar-panel">
+              <div className="sidebar-header">
+                <button 
+                  className="sidebar-header-btn" 
+                  onClick={() => setSelectedImageId(null)}
+                >
+                  <ArrowLeft size={16} />
+                  <span>Back to Layout</span>
+                </button>
               </div>
 
-              {/* Custom Size Form fields */}
-              {paperPreset === "custom" && (
-                <div className="settings-grid">
-                  <div className="input-group">
-                    <label className="input-label">Width ({getUnitSymbol()})</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="input-field"
-                      value={Number(convertMmToActiveUnit(paperWidth).toFixed(2))}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (!isNaN(val)) setPaperWidth(convertActiveUnitToMm(val));
-                      }}
-                    />
+              {/* Section 1: Dimensions */}
+              <section className="sidebar-section">
+                <h2 className="sidebar-section-title">Scale Image</h2>
+                <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                  <div className="settings-grid">
+                    <div className="input-group">
+                      <label className="input-label">Width ({getUnitSymbol()})</label>
+                      <input
+                        type="number"
+                        step="any"
+                        className="input-field"
+                        value={Number(convertMmToActiveUnit(selectedImage.targetWidth).toFixed(2))}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!isNaN(val)) {
+                            const ratio = selectedImage.targetHeight / selectedImage.targetWidth;
+                            setImages((prev) =>
+                              prev.map((img) =>
+                                img.id === selectedImage.id
+                                  ? {
+                                      ...img,
+                                      targetWidth: convertActiveUnitToMm(val),
+                                      targetHeight: convertActiveUnitToMm(val) * ratio,
+                                    }
+                                  : img
+                              )
+                            );
+                          }
+                        }}
+                      />
+                    </div>
+                    
+                    <div className="input-group">
+                      <label className="input-label">Height ({getUnitSymbol()})</label>
+                      <input
+                        type="number"
+                        step="any"
+                        className="input-field"
+                        value={Number(convertMmToActiveUnit(selectedImage.targetHeight).toFixed(2))}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!isNaN(val)) {
+                            const ratio = selectedImage.targetWidth / selectedImage.targetHeight;
+                            setImages((prev) =>
+                              prev.map((img) =>
+                                img.id === selectedImage.id
+                                  ? {
+                                      ...img,
+                                      targetHeight: convertActiveUnitToMm(val),
+                                      targetWidth: convertActiveUnitToMm(val) * ratio,
+                                    }
+                                  : img
+                              )
+                            );
+                          }
+                        }}
+                      />
+                    </div>
                   </div>
-                  <div className="input-group">
-                    <label className="input-label">Height ({getUnitSymbol()})</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="input-field"
-                      value={Number(convertMmToActiveUnit(paperHeight).toFixed(2))}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (!isNaN(val)) setPaperHeight(convertActiveUnitToMm(val));
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
 
-              {/* Layout Mode selection */}
-              <div className="settings-grid" style={{ marginTop: "4px" }}>
-                <div className="input-group">
-                  <label className="input-label">Layout Mode</label>
-                  <select 
-                    className="select-field" 
-                    value={layoutMode} 
-                    onChange={(e) => setLayoutMode(e.target.value as "flow" | "tiled")}
+                  <p style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "-6px" }}>
+                    Aspect ratio is locked. Drag corner handles to scale proportionally.
+                  </p>
+                </div>
+              </section>
+
+              {/* Section 2: Image Processing Tools */}
+              <section className="sidebar-section">
+                <h2 className="sidebar-section-title">Processing & Crop</h2>
+                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                  
+                  {/* PNG tight bounding box crop */}
+                  {selectedImage.mimeType === "image/png" && selectedImage.bounds && (
+                    <label className="checkbox-container">
+                      <input
+                        type="checkbox"
+                        className="visually-hidden"
+                        checked={selectedImage.useImageBounds}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setImages((prev) =>
+                            prev.map((img) =>
+                              img.id === selectedImage.id
+                                ? { ...img, useImageBounds: checked }
+                                : img
+                            )
+                          );
+                        }}
+                      />
+                      <div className="checkbox-custom">
+                        {selectedImage.useImageBounds && <Check size={10} strokeWidth={3} />}
+                      </div>
+                      <span>Use tight content bounds (crop margins)</span>
+                    </label>
+                  )}
+
+                  {/* Calibration */}
+                  <button 
+                    className="btn btn-secondary" 
+                    onClick={startCalibration}
+                    disabled={isCalibrationActive}
                   >
-                    <option value="flow">Flow (Separate Sheets)</option>
-                    <option value="tiled">Gluing Grid (Tiled)</option>
-                  </select>
+                    <Ruler size={14} />
+                    Calibrate Physical Size
+                  </button>
+
+                  {/* AI background removal */}
+                  {!selectedImage.backgroundRemoved && (
+                    <button 
+                      className="btn btn-secondary" 
+                      onClick={() => handleRemoveBackground(selectedImage)}
+                      disabled={isBgRemovalProcessing}
+                    >
+                      <RefreshCw size={14} style={{ animation: isBgRemovalProcessing ? "spin 2s linear infinite" : "none" }} />
+                      Remove Background (rembg AI)
+                    </button>
+                  )}
+
                 </div>
-                
-                {layoutMode === "tiled" ? (
-                  <div className="input-group">
-                    <label className="input-label">Gluing Overlap ({getUnitSymbol()})</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="input-field"
-                      value={Number(convertMmToActiveUnit(gluingMargin).toFixed(2))}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (!isNaN(val)) setGluingMargin(convertActiveUnitToMm(val));
-                      }}
-                    />
-                  </div>
-                ) : (
-                  <div className="input-group">
-                    <label className="input-label">Print Margin ({getUnitSymbol()})</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="input-field"
-                      value={Number(convertMmToActiveUnit(sheetMargin).toFixed(2))}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (!isNaN(val)) setSheetMargin(convertActiveUnitToMm(val));
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
+              </section>
 
-              {/* Gluing sheet count warning */}
-              {layoutMode === "tiled" && pagesCount > 1 && (
-                <div className="badge-warning">
-                  <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                    <AlertCircle size={14} style={{ color: "var(--accent-color)" }} />
-                    <span className="badge-warning-title">Tiled Grid Layout</span>
-                  </div>
-                  <span className="badge-warning-desc">
-                    Requires <strong>{pagesCount}</strong> ({cols} × {rows}) sheets of paper. Gluing and cutting boundaries are marked on the sheets.
-                  </span>
-                </div>
-              )}
+              {/* Section 3: Destructive Actions */}
+              <section className="sidebar-section" style={{ borderBottom: "none" }}>
+                <button 
+                  className="btn btn-danger" 
+                  onClick={() => {
+                    setImages((prev) => prev.filter((i) => i.id !== selectedImage.id));
+                    setSelectedImageId(null);
+                  }}
+                >
+                  <Trash2 size={14} />
+                  Delete Image
+                </button>
+              </section>
             </div>
-          </section>
+          ) : (
+            /* GENERAL DOCUMENT PANEL - visible when no image is selected */
+            <div className="sidebar-panel">
+              
+              {/* Section 1: Paper Configuration */}
+              <section className="sidebar-section">
+                <h2 className="sidebar-section-title">Paper Size</h2>
+                <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                  <div className="input-group">
+                    <label className="input-label">Select Preset</label>
+                    <select className="select-field" value={paperPreset} onChange={handlePresetChange}>
+                      {Object.keys(PAPER_PRESETS).map((key) => (
+                        <option key={key} value={key}>
+                          {PAPER_PRESETS[key].name}
+                        </option>
+                      ))}
+                      <option value="custom">Custom Size...</option>
+                    </select>
+                  </div>
 
-          {/* Files List upload */}
-          <section className="sidebar-section" onClick={(e) => e.stopPropagation()}>
-            <h2 className="sidebar-section-title">Images</h2>
-            
-            <input 
-              type="file" 
-              className="visually-hidden" 
-              ref={fileInputRef} 
-              multiple 
-              accept="image/*"
-              onChange={(e) => {
-                if (e.target.files) loadImagesFromFiles(e.target.files);
-              }}
-            />
-            
-            <div className="upload-zone" onClick={() => fileInputRef.current?.click()}>
-              <Upload size={20} className="upload-icon" />
-              <p style={{ fontWeight: 500, fontSize: "0.85rem" }}>Upload or drag images</p>
-              <p style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "4px" }}>PNG, JPG supported</p>
-            </div>
-
-            {/* List stack */}
-            {images.length > 0 && (
-              <div className="image-list" style={{ marginTop: "16px" }}>
-                {images.map((img) => (
-                  <div 
-                    key={img.id}
-                    className={`image-list-card ${img.id === selectedImageId ? "selected" : ""}`}
-                    onClick={() => setSelectedImageId(img.id)}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={img.src} alt={img.name} className="thumbnail-preview" />
-                    <div className="image-card-info">
-                      <div className="image-card-name">{img.name}</div>
-                      <div className="image-card-meta">
-                        {Number(convertMmToActiveUnit(img.targetWidth).toFixed(1))} × {Number(convertMmToActiveUnit(img.targetHeight).toFixed(1))} {getUnitSymbol()}
+                  {paperPreset === "custom" && (
+                    <div className="settings-grid">
+                      <div className="input-group">
+                        <label className="input-label">Width ({getUnitSymbol()})</label>
+                        <input
+                          type="number"
+                          step="any"
+                          className="input-field"
+                          value={Number(convertMmToActiveUnit(paperWidth).toFixed(2))}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            if (!isNaN(val)) setPaperWidth(convertActiveUnitToMm(val));
+                          }}
+                        />
+                      </div>
+                      <div className="input-group">
+                        <label className="input-label">Height ({getUnitSymbol()})</label>
+                        <input
+                          type="number"
+                          step="any"
+                          className="input-field"
+                          value={Number(convertMmToActiveUnit(paperHeight).toFixed(2))}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            if (!isNaN(val)) setPaperHeight(convertActiveUnitToMm(val));
+                          }}
+                        />
                       </div>
                     </div>
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setImages((prev) => prev.filter((i) => i.id !== img.id));
-                        if (selectedImageId === img.id) setSelectedImageId(null);
-                      }}
-                      title="Remove image"
-                      style={{ padding: "4px", color: "var(--text-muted)", cursor: "pointer" }}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
+                  )}
 
-          {/* Active Image Settings (visible only when selected) */}
-          {selectedImage && (
-            <section className="sidebar-section" onClick={(e) => e.stopPropagation()}>
-              <h2 className="sidebar-section-title">Image Options</h2>
-              
-              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                  <div className="settings-grid" style={{ marginTop: "4px" }}>
+                    <div className="input-group">
+                      <label className="input-label">Layout Mode</label>
+                      <select 
+                        className="select-field" 
+                        value={layoutMode} 
+                        onChange={(e) => setLayoutMode(e.target.value as "flow" | "tiled")}
+                      >
+                        <option value="flow">Flow (Separate Sheets)</option>
+                        <option value="tiled">Gluing Grid (Tiled)</option>
+                      </select>
+                    </div>
+                    
+                    {layoutMode === "tiled" ? (
+                      <div className="input-group">
+                        <label className="input-label">Gluing Overlap ({getUnitSymbol()})</label>
+                        <input
+                          type="number"
+                          step="any"
+                          className="input-field"
+                          value={Number(convertMmToActiveUnit(gluingMargin).toFixed(2))}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            if (!isNaN(val)) setGluingMargin(convertActiveUnitToMm(val));
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="input-group">
+                        <label className="input-label">Print Margin ({getUnitSymbol()})</label>
+                        <input
+                          type="number"
+                          step="any"
+                          className="input-field"
+                          value={Number(convertMmToActiveUnit(sheetMargin).toFixed(2))}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            if (!isNaN(val)) setSheetMargin(convertActiveUnitToMm(val));
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Overlap guides toggle visibility */}
+                  {layoutMode === "tiled" && (
+                    <label className="checkbox-container" style={{ marginTop: "4px" }}>
+                      <input
+                        type="checkbox"
+                        className="visually-hidden"
+                        checked={showOverlapGuides}
+                        onChange={(e) => setShowOverlapGuides(e.target.checked)}
+                      />
+                      <div className="checkbox-custom">
+                        {showOverlapGuides && <Check size={10} strokeWidth={3} />}
+                      </div>
+                      <span>Show gluing guides & rotated labels</span>
+                    </label>
+                  )}
+
+                  {/* Gluing sheet count warning */}
+                  {layoutMode === "tiled" && pagesCount > 1 && (
+                    <div className="badge-warning">
+                      <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                        <AlertCircle size={14} style={{ color: "var(--accent-color)" }} />
+                        <span className="badge-warning-title">Tiled Grid Layout</span>
+                      </div>
+                      <span className="badge-warning-desc">
+                        Image exceeds paper size. Splitting across <strong>{pagesCount}</strong> ({cols} × {rows}) sheets. Glued borders are colored on screen.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {/* Section 2: Media Import list */}
+              <section className="sidebar-section">
+                <h2 className="sidebar-section-title">Images</h2>
                 
-                {/* Manual scale target input values */}
-                <div className="settings-grid">
-                  <div className="input-group">
-                    <label className="input-label">Width ({getUnitSymbol()})</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="input-field"
-                      value={Number(convertMmToActiveUnit(selectedImage.targetWidth).toFixed(2))}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (!isNaN(val)) {
-                          const ratio = selectedImage.targetHeight / selectedImage.targetWidth;
-                          setImages((prev) =>
-                            prev.map((img) =>
-                              img.id === selectedImage.id
-                                ? {
-                                    ...img,
-                                    targetWidth: convertActiveUnitToMm(val),
-                                    targetHeight: convertActiveUnitToMm(val) * ratio,
-                                  }
-                                : img
-                            )
-                          );
-                        }
-                      }}
-                    />
-                  </div>
-                  
-                  <div className="input-group">
-                    <label className="input-label">Height ({getUnitSymbol()})</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="input-field"
-                      value={Number(convertMmToActiveUnit(selectedImage.targetHeight).toFixed(2))}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (!isNaN(val)) {
-                          const ratio = selectedImage.targetWidth / selectedImage.targetHeight;
-                          setImages((prev) =>
-                            prev.map((img) =>
-                              img.id === selectedImage.id
-                                ? {
-                                    ...img,
-                                    targetHeight: convertActiveUnitToMm(val),
-                                    targetWidth: convertActiveUnitToMm(val) * ratio,
-                                  }
-                                : img
-                            )
-                          );
-                        }
-                      }}
-                    />
-                  </div>
+                <input 
+                  type="file" 
+                  className="visually-hidden" 
+                  ref={fileInputRef} 
+                  multiple 
+                  accept="image/*"
+                  onChange={(e) => {
+                    if (e.target.files) loadImagesFromFiles(e.target.files);
+                  }}
+                />
+                
+                <div className="upload-zone" onClick={() => fileInputRef.current?.click()}>
+                  <Upload size={18} className="upload-icon" />
+                  <p style={{ fontWeight: 500, fontSize: "0.82rem" }}>Upload or drag images</p>
+                  <p style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginTop: "2px" }}>PNG, JPG supported</p>
                 </div>
 
-                {/* PNG bounds detection checkbox */}
-                {selectedImage.mimeType === "image/png" && selectedImage.bounds && (
+                {images.length > 0 ? (
+                  <div className="image-list" style={{ marginTop: "16px" }}>
+                    {images.map((img) => (
+                      <div 
+                        key={img.id}
+                        className="image-list-card"
+                        onClick={() => setSelectedImageId(img.id)}
+                        title="Click to scale or edit"
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={img.src} alt={img.name} className="thumbnail-preview" />
+                        <div className="image-card-info">
+                          <div className="image-card-name">{img.name}</div>
+                          <div className="image-card-meta">
+                            {Number(convertMmToActiveUnit(img.targetWidth).toFixed(1))} × {Number(convertMmToActiveUnit(img.targetHeight).toFixed(1))} {getUnitSymbol()}
+                          </div>
+                          <span style={{ fontSize: "8px", textTransform: "uppercase", color: "var(--text-muted)", display: "block", marginTop: "2px" }}>Click to resize</span>
+                        </div>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setImages((prev) => prev.filter((i) => i.id !== img.id));
+                          }}
+                          title="Remove image"
+                          style={{ padding: "4px", color: "var(--text-muted)", cursor: "pointer" }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="sidebar-placeholder">
+                    <Grid size={24} style={{ opacity: 0.3 }} />
+                    <p>No images uploaded yet.</p>
+                  </div>
+                )}
+              </section>
+
+              {/* Section 3: Packing & Arrange */}
+              <section className="sidebar-section">
+                <h2 className="sidebar-section-title">Page Layout</h2>
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                   <label className="checkbox-container">
                     <input
                       type="checkbox"
                       className="visually-hidden"
-                      checked={selectedImage.useImageBounds}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setImages((prev) =>
-                          prev.map((img) =>
-                            img.id === selectedImage.id
-                              ? { ...img, useImageBounds: checked }
-                              : img
-                          )
-                        );
-                      }}
+                      checked={allowRotation}
+                      onChange={(e) => setAllowRotation(e.target.checked)}
                     />
                     <div className="checkbox-custom">
-                      {selectedImage.useImageBounds && <Check size={10} strokeWidth={3} />}
+                      {allowRotation && <Check size={10} strokeWidth={3} />}
                     </div>
-                    <span>Use tight content bounds (crop transparent borders)</span>
+                    <span>Allow 90° image rotation to conserve space</span>
                   </label>
-                )}
 
-                {/* Background removal triggers */}
-                {!selectedImage.backgroundRemoved && (
                   <button 
                     className="btn btn-secondary" 
-                    onClick={() => handleRemoveBackground(selectedImage)}
-                    disabled={isBgRemovalProcessing}
-                    style={{ fontSize: "0.85rem" }}
+                    onClick={handleDistributeClick}
+                    disabled={images.length === 0}
                   >
-                    <RefreshCw size={14} style={{ animation: isBgRemovalProcessing ? "spin 2s linear infinite" : "none" }} />
-                    Remove Background (rembg AI)
+                    <Grid size={14} />
+                    Distribute (Auto arrange)
                   </button>
-                )}
-
-                {/* Ruler Calibration Button */}
-                <button 
-                  className="btn btn-secondary" 
-                  onClick={startCalibration}
-                  disabled={isCalibrationActive}
-                  style={{ fontSize: "0.85rem" }}
-                >
-                  <Ruler size={14} />
-                  Calibrate Physical Size
-                </button>
-
-              </div>
-            </section>
-          )}
-
-          {/* Arrangement & Distribute Buttons */}
-          <section className="sidebar-section" onClick={(e) => e.stopPropagation()}>
-            <h2 className="sidebar-section-title">Layout Actions</h2>
-            
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              <label className="checkbox-container">
-                <input
-                  type="checkbox"
-                  className="visually-hidden"
-                  checked={allowRotation}
-                  onChange={(e) => setAllowRotation(e.target.checked)}
-                />
-                <div className="checkbox-custom">
-                  {allowRotation && <Check size={10} strokeWidth={3} />}
                 </div>
-                <span>Allow 90° image rotation to conserve space</span>
-              </label>
+              </section>
 
-              <button 
-                className="btn btn-secondary" 
-                onClick={handleDistributeClick}
-                disabled={images.length === 0}
-              >
-                <Grid size={14} />
-                Distribute (Auto arrange)
-              </button>
+              {/* Section 4: Export & Download */}
+              <section className="sidebar-section" style={{ borderBottom: "none" }}>
+                <h2 className="sidebar-section-title">Download Output</h2>
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  <div className="input-group">
+                    <label className="input-label">Export Format</label>
+                    <select 
+                      className="select-field" 
+                      value={exportFormat}
+                      onChange={(e) => setExportFormat(e.target.value as "pdf" | "png" | "jpg")}
+                    >
+                      <option value="pdf">PDF Document (.pdf)</option>
+                      <option value="png">PNG Images (.png / .zip)</option>
+                      <option value="jpg">JPEG Images (.jpg / .zip)</option>
+                    </select>
+                  </div>
+
+                  <button 
+                    className="btn btn-primary" 
+                    onClick={triggerExport}
+                    disabled={images.length === 0}
+                  >
+                    <Download size={14} />
+                    Export printable {exportFormat.toUpperCase()}
+                  </button>
+                </div>
+              </section>
+
+              {/* Unsaved Warning card footer notice */}
+              <footer className="save-warning-footer">
+                <AlertCircle size={14} style={{ color: "var(--text-muted)", flexShrink: 0, marginTop: "2px" }} />
+                <div className="save-warning-text">
+                  Planar runs entirely in your browser. Work is not saved to a server. Leaving or refreshing this page will discard your layout.
+                </div>
+              </footer>
+
             </div>
-          </section>
-
-          {/* Export Settings & Download */}
-          <section className="sidebar-section" style={{ marginTop: "auto", borderBottom: "none" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-              <div className="input-group">
-                <label className="input-label">Export Format</label>
-                <select 
-                  className="select-field" 
-                  value={exportFormat}
-                  onChange={(e) => setExportFormat(e.target.value as "pdf" | "png" | "jpg")}
-                >
-                  <option value="pdf">PDF Document (.pdf)</option>
-                  <option value="png">PNG Images (.png / .zip)</option>
-                  <option value="jpg">JPEG Images (.jpg / .zip)</option>
-                </select>
-              </div>
-
-              <button 
-                className="btn btn-primary" 
-                onClick={triggerExport}
-                disabled={images.length === 0}
-              >
-                <Download size={14} />
-                Export printable {exportFormat.toUpperCase()}
-              </button>
-            </div>
-          </section>
+          )}
         </aside>
       </main>
     </div>
