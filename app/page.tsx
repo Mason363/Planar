@@ -454,32 +454,32 @@ export default function PlanarApp() {
     const container = workspaceRef.current;
     if (!container) return;
 
-    // Keep a local history of recent scroll deltas to distinguish trackpad vs mouse wheel
-    let wheelHistory: { dx: number; dy: number; time: number }[] = [];
+    let lastTrackpadTime = 0;
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
 
       const now = Date.now();
-      // Remove events older than 500ms
-      wheelHistory = wheelHistory.filter(x => now - x.time < 500);
-      wheelHistory.push({ dx: e.deltaX, dy: e.deltaY, time: now });
-      if (wheelHistory.length > 8) {
-        wheelHistory.shift();
+
+      // Check if the current event shows any trackpad-specific signature:
+      // 1. Horizontal scrolling (deltaX !== 0)
+      // 2. Fractional scrolling (fractional deltaY or deltaX)
+      // 3. Very small deltas (Math.abs(deltaY) < 4), which are typical of trackpad start/precision swipes but not mouse wheel notches
+      const isTrackpadEvent = e.deltaX !== 0 || e.deltaX % 1 !== 0 || e.deltaY % 1 !== 0 || (e.deltaY !== 0 && Math.abs(e.deltaY) < 4);
+
+      if (isTrackpadEvent) {
+        lastTrackpadTime = now;
       }
 
-      // Check if there is any evidence of trackpad swipe (non-zero deltaX or fractional deltas)
-      const hasTrackpadSign = wheelHistory.some(
-        x => x.dx !== 0 || x.dx % 1 !== 0 || x.dy % 1 !== 0
-      );
+      // Treat as trackpad if we saw a trackpad signature in the last 1000ms
+      const isTrackpad = (now - lastTrackpadTime) < 1000;
 
-      // Discrete large integer steps (typical of physical mouse wheel ticks)
-      const isDiscreteMouse = e.deltaX === 0 && e.deltaY % 1 === 0 && Math.abs(e.deltaY) >= 4;
+      // We zoom if:
+      // - User pinches on trackpad (ctrlKey/metaKey is true)
+      // - OR we are NOT on a trackpad (meaning it's a physical mouse wheel scroll)
+      const shouldZoom = e.ctrlKey || e.metaKey || !isTrackpad;
 
-      // If it's a discrete tick OR if we've seen at least 2 events and none have trackpad indicators, it's a mouse
-      const isMouseScroll = isDiscreteMouse || (!hasTrackpadSign && wheelHistory.length >= 2);
-
-      if (e.ctrlKey || e.metaKey || isMouseScroll) {
+      if (shouldZoom) {
         // Zoom
         let factor = 1.0;
         if (e.ctrlKey || e.metaKey) {
@@ -517,7 +517,7 @@ export default function PlanarApp() {
           top: pointY * nextZoom - mouseY,
         };
       } else {
-        // Two-finger trackpad panning or mouse wheel scroll pan
+        // Two-finger trackpad panning
         container.scrollLeft += e.deltaX;
         container.scrollTop += e.deltaY;
       }
@@ -1304,6 +1304,49 @@ export default function PlanarApp() {
 
   const { totalWidth, totalHeight, cols, rows, pagesCount } = getLayoutDimensions();
 
+  // Fit the canvas pasteboard to the available viewport space
+  const fitToViewport = () => {
+    const container = workspaceRef.current;
+    if (!container) return;
+
+    const containerW = container.clientWidth;
+    const containerH = container.clientHeight;
+
+    if (containerW > 0 && containerH > 0) {
+      const neededW = (totalWidth + 80) * PX_PER_MM;
+      const neededH = (totalHeight + 80) * PX_PER_MM;
+      const zoomW = containerW / neededW;
+      const zoomH = containerH / neededH;
+      // Fit to screen with a 8% safety margin
+      const nextZoom = Math.max(0.12, Math.min(3.0, Math.min(zoomW, zoomH) * 0.92));
+      
+      setZoom(nextZoom);
+
+      // Center the scroll position
+      pendingScrollRef.current = {
+        left: (neededW * nextZoom - containerW) / 2,
+        top: (neededH * nextZoom - containerH) / 2,
+      };
+    }
+  };
+
+  // Auto-fit to viewport on initial mount or when layout sizes change
+  useEffect(() => {
+    if (mounted) {
+      fitToViewport();
+    }
+  }, [mounted, totalWidth, totalHeight]);
+
+  // Window resize/rotation listener to recalculate page fit
+  useEffect(() => {
+    if (!mounted) return;
+    const handleResize = () => {
+      fitToViewport();
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [mounted, totalWidth, totalHeight]);
+
   // Distribute packing algorithm
   const distributeImagesList = (items: ImageItem[]): ImageItem[] => {
     if (items.length === 0) return items;
@@ -1484,7 +1527,7 @@ export default function PlanarApp() {
 
   const handleZoomIn = () => setZoom((z) => Math.min(3.0, z + 0.1));
   const handleZoomOut = () => setZoom((z) => Math.max(0.15, z - 0.1));
-  const handleZoomReset = () => setZoom(0.8);
+  const handleZoomReset = () => fitToViewport();
 
   const startCropping = (id: string) => {
     setSelectedImageId(id);

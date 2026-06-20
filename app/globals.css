@@ -171,16 +171,28 @@ html, body {
 .workspace-container {
   position: relative;
   overflow: auto;
-  display: flex;
   height: 100%;
   width: 100%;
   cursor: default;
   z-index: 10;
+  white-space: nowrap;
+  text-align: center;
+}
+
+/* Ghost element to align vertical-align: middle when smaller than viewport */
+.workspace-container::before {
+  content: "";
+  display: inline-block;
+  height: 100%;
+  vertical-align: middle;
 }
 
 .workspace-scroll-wrapper {
-  margin: auto;
+  display: inline-block;
+  vertical-align: middle;
   position: relative;
+  text-align: left;
+  white-space: normal;
 }
 
 .workspace-pasteboard {
