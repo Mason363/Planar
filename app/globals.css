@@ -933,7 +933,6 @@ select option {
   background-color: rgba(255, 255, 255, 0.35);
 }
 
-/* Rule of Thirds guides */
 .crop-guide-lines::after {
   top: 33.33%;
   bottom: 33.33%;
@@ -950,4 +949,42 @@ select option {
   bottom: 0;
   border-left: 1px dashed rgba(255, 255, 255, 0.3);
   border-right: 1px dashed rgba(255, 255, 255, 0.3);
+}
+
+/* About footer styled cards */
+.about-footer {
+  margin-top: 12px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border-main);
+  background-color: var(--bg-panel);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.about-author {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.about-links {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+}
+
+.about-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+.about-link:hover {
+  color: var(--text-main);
 }

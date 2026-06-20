@@ -174,6 +174,88 @@ export default function PlanarApp() {
     zoomRef.current = zoom;
   }, [zoom]);
 
+  // Refs to avoid rebuilding window-level event listeners on state changes
+  const paperWidthRef = useRef(paperWidth);
+  const paperHeightRef = useRef(paperHeight);
+  const sheetMarginRef = useRef(sheetMargin);
+
+  useEffect(() => { paperWidthRef.current = paperWidth; }, [paperWidth]);
+  useEffect(() => { paperHeightRef.current = paperHeight; }, [paperHeight]);
+  useEffect(() => { sheetMarginRef.current = sheetMargin; }, [sheetMargin]);
+
+  // Spacebar pressed tracking for Panning
+  const [spacePressed, setSpacePressed] = useState(false);
+  const panningInfo = useRef({
+    isPanning: false,
+    startX: 0,
+    startY: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        const tag = document.activeElement?.tagName.toLowerCase();
+        if (tag !== "input" && tag !== "select" && tag !== "textarea") {
+          e.preventDefault();
+          setSpacePressed(true);
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        setSpacePressed(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, []);
+
+  const handleWorkspaceMouseDown = (e: React.MouseEvent) => {
+    // Enable panning on space pressed or middle click
+    if (e.button === 1 || spacePressed) {
+      e.preventDefault();
+      const container = workspaceRef.current;
+      if (!container) return;
+
+      panningInfo.current = {
+        isPanning: true,
+        startX: e.clientX,
+        startY: e.clientY,
+        scrollLeft: container.scrollLeft,
+        scrollTop: container.scrollTop,
+      };
+
+      document.addEventListener("mousemove", handleWorkspaceMouseMove);
+      document.addEventListener("mouseup", handleWorkspaceMouseUp);
+    }
+  };
+
+  const handleWorkspaceMouseMove = (e: MouseEvent) => {
+    if (!panningInfo.current.isPanning) return;
+    const container = workspaceRef.current;
+    if (!container) return;
+
+    const dx = e.clientX - panningInfo.current.startX;
+    const dy = e.clientY - panningInfo.current.startY;
+
+    container.scrollLeft = panningInfo.current.scrollLeft - dx;
+    container.scrollTop = panningInfo.current.scrollTop - dy;
+  };
+
+  const handleWorkspaceMouseUp = () => {
+    panningInfo.current.isPanning = false;
+    document.removeEventListener("mousemove", handleWorkspaceMouseMove);
+    document.removeEventListener("mouseup", handleWorkspaceMouseUp);
+  };
+
   // Mouse Drag / Resize / Rotate state
   const dragInfo = useRef<{
     type: "drag" | "resize" | "rotate" | null;
@@ -197,7 +279,7 @@ export default function PlanarApp() {
     initialRotation: 0,
   });
 
-  // Trackpad pinch-to-zoom and two-finger scroll panning
+  // Trackpad pinch-to-zoom (smooth, centered on cursor) and scroll panning
   useEffect(() => {
     const container = workspaceRef.current;
     if (!container) return;
@@ -206,12 +288,27 @@ export default function PlanarApp() {
       e.preventDefault();
 
       if (e.ctrlKey || e.metaKey) {
-        // Pinch-to-zoom or Ctrl + scroll
-        const zoomFactor = 1.05;
-        const nextZoom = e.deltaY > 0 
-          ? Math.max(0.15, zoomRef.current / zoomFactor)
-          : Math.min(3.0, zoomRef.current * zoomFactor);
+        // Pinch-to-zoom (trackpad) or Ctrl + scroll wheel
+        // Exponential zoom delta makes the scaling smooth and natural
+        const zoomDelta = -e.deltaY * 0.0035; 
+        const nextZoom = Math.max(0.15, Math.min(3.0, zoomRef.current * Math.exp(zoomDelta)));
+
+        const rect = container.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        const scrollLeft = container.scrollLeft;
+        const scrollTop = container.scrollTop;
+
+        // Map mouse coordinates to unzoomed pasteboard space
+        const pointX = (scrollLeft + mouseX) / zoomRef.current;
+        const pointY = (scrollTop + mouseY) / zoomRef.current;
+
         setZoom(nextZoom);
+
+        // Adjust scroll position to keep the mouse point at the same screen position
+        container.scrollLeft = pointX * nextZoom - mouseX;
+        container.scrollTop = pointY * nextZoom - mouseY;
       } else {
         // Two-finger trackpad panning or mouse wheel scroll
         container.scrollLeft += e.deltaX;
@@ -221,6 +318,38 @@ export default function PlanarApp() {
 
     container.addEventListener("wheel", handleWheel, { passive: false });
     return () => container.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  // Global window drag and drop listener (unconditional image upload in any state)
+  useEffect(() => {
+    const handleWindowDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      setIsDragOver(true);
+    };
+
+    const handleWindowDragLeave = (e: DragEvent) => {
+      if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+        setIsDragOver(false);
+      }
+    };
+
+    const handleWindowDrop = (e: DragEvent) => {
+      e.preventDefault();
+      setIsDragOver(false);
+      if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+        loadImagesFromFiles(e.dataTransfer.files);
+      }
+    };
+
+    window.addEventListener("dragover", handleWindowDragOver);
+    window.addEventListener("dragleave", handleWindowDragLeave);
+    window.addEventListener("drop", handleWindowDrop);
+
+    return () => {
+      window.removeEventListener("dragover", handleWindowDragOver);
+      window.removeEventListener("dragleave", handleWindowDragLeave);
+      window.removeEventListener("drop", handleWindowDrop);
+    };
   }, []);
 
   // Hydration fix & Initial Theme
@@ -1319,15 +1448,22 @@ export default function PlanarApp() {
       </header>
 
       {/* Main Area */}
-      <main className="main-content" onDragOver={handleDragOver} onDrop={handleDrop}>
+      <main className="main-content">
         {/* Center Canvas */}
         <div 
           className="workspace-container" 
           ref={workspaceRef}
-          onDragLeave={handleDragLeave}
+          onMouseDown={handleWorkspaceMouseDown}
           onClick={() => {
             setSelectedImageId(null);
             stopCropping();
+          }}
+          style={{
+            cursor: spacePressed
+              ? panningInfo.current.isPanning
+                ? "grabbing"
+                : "grab"
+              : "default",
           }}
         >
           {/* Calibration active banner */}
@@ -1979,6 +2115,21 @@ export default function PlanarApp() {
                   Delete Image
                 </button>
               </section>
+
+              {/* About author section */}
+              <footer className="about-footer">
+                <div className="about-author">Made with ❤️ by Mason Chen</div>
+                <div className="about-links">
+                  <a href="https://github.com/Mason363" target="_blank" rel="noopener noreferrer" className="about-link">
+                    <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
+                    <span>GitHub</span>
+                  </a>
+                  <a href="https://buymeacoffee.com/masonchen" target="_blank" rel="noopener noreferrer" className="about-link">
+                    <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path><line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line></svg>
+                    <span>Buy Me a Coffee</span>
+                  </a>
+                </div>
+              </footer>
             </div>
           ) : (
             /* GENERAL DOCUMENT PANEL - split into visible progress steps */
@@ -2251,6 +2402,20 @@ export default function PlanarApp() {
                 </div>
               </footer>
 
+              {/* About author section */}
+              <footer className="about-footer">
+                <div className="about-author">Made with ❤️ by Mason Chen</div>
+                <div className="about-links">
+                  <a href="https://github.com/Mason363" target="_blank" rel="noopener noreferrer" className="about-link">
+                    <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
+                    <span>GitHub</span>
+                  </a>
+                  <a href="https://buymeacoffee.com/masonchen" target="_blank" rel="noopener noreferrer" className="about-link">
+                    <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M18 8h1a4 4 0 0 1 0 8h-1"></path><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path><line x1="6" y1="1" x2="6" y2="4"></line><line x1="10" y1="1" x2="10" y2="4"></line><line x1="14" y1="1" x2="14" y2="4"></line></svg>
+                    <span>Buy Me a Coffee</span>
+                  </a>
+                </div>
+              </footer>
             </div>
           )}
         </aside>
