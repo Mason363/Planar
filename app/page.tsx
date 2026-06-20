@@ -1792,23 +1792,8 @@ export default function PlanarApp() {
 
       {/* Main Area */}
       <main className="main-content">
-        {/* Center Canvas */}
-        <div 
-          className="workspace-container" 
-          ref={workspaceRef}
-          onMouseDown={handleWorkspaceMouseDown}
-          onClick={() => {
-            setSelectedImageId(null);
-            stopCropping();
-          }}
-          style={{
-            cursor: isPanning
-              ? "grabbing"
-              : spacePressed
-              ? "grab"
-              : "default",
-          }}
-        >
+        {/* Center Canvas Viewport */}
+        <div className="workspace-viewport">
           {/* Calibration active banner */}
           {isCalibrationActive && selectedImage && (
             <div className="banner calibration-banner" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
@@ -1893,8 +1878,24 @@ export default function PlanarApp() {
             <button className="zoom-btn" style={{ fontSize: "9px" }} onClick={handleZoomReset} title="Reset Zoom">FIT</button>
           </div>
 
-          {/* Scroll Wrapper to ensure correct overflow sizes */}
-          <div
+          <div 
+            className="workspace-container" 
+            ref={workspaceRef}
+            onMouseDown={handleWorkspaceMouseDown}
+            onClick={() => {
+              setSelectedImageId(null);
+              stopCropping();
+            }}
+            style={{
+              cursor: isPanning
+                ? "grabbing"
+                : spacePressed
+                ? "grab"
+                : "default",
+            }}
+          >
+            {/* Scroll Wrapper to ensure correct overflow sizes */}
+            <div
             className="workspace-scroll-wrapper"
             style={{
               width: `${(totalWidth + 80) * PX_PER_MM * zoom}px`,
@@ -2051,13 +2052,15 @@ export default function PlanarApp() {
             </div>
           </div>
 
-          <div className={`drag-overlay ${isDragOver ? "active" : ""}`}>
-            <div className="drag-overlay-box">
-              <Upload size={48} className="upload-icon" />
-              <p>Drop images to import into Planar</p>
-            </div>
+        </div>
+
+        <div className={`drag-overlay ${isDragOver ? "active" : ""}`}>
+          <div className="drag-overlay-box">
+            <Upload size={48} className="upload-icon" />
+            <p>Drop images to import into Planar</p>
           </div>
         </div>
+      </div>
 
         {/* Sidebar Panel */}
         <aside className="sidebar">

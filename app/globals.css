@@ -159,15 +159,24 @@ html, body {
   overflow: hidden;
 }
 
-/* Pasteboard Workspace */
+/* Pasteboard Workspace Viewport (Fixed boundaries) */
+.workspace-viewport {
+  position: relative;
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+  background-color: var(--bg-canvas);
+}
+
+/* Pasteboard Workspace Container (Scrollable canvas) */
 .workspace-container {
   position: relative;
-  background-color: var(--bg-canvas);
   overflow: auto;
   display: flex;
   height: 100%;
   width: 100%;
   cursor: default;
+  z-index: 10;
 }
 
 .workspace-scroll-wrapper {
@@ -993,6 +1002,11 @@ select option {
     grid-template-columns: 1fr !important;
     grid-template-rows: 52vh 48vh !important;
     height: calc(100vh - 48px);
+  }
+
+  .workspace-viewport {
+    height: 100%;
+    width: 100%;
   }
 
   .workspace-container {
