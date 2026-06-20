@@ -175,24 +175,19 @@ html, body {
   width: 100%;
   cursor: default;
   z-index: 10;
-  white-space: nowrap;
-  text-align: center;
-}
-
-/* Ghost element to align vertical-align: middle when smaller than viewport */
-.workspace-container::before {
-  content: "";
-  display: inline-block;
-  height: 100%;
-  vertical-align: middle;
+  /* Flex + margin:auto on the child centers the canvas when it is smaller
+     than the viewport while keeping every edge reachable by scrolling when
+     it is larger (avoids the classic flex/text-align centering scroll clip). */
+  display: flex;
+  /* Disable the browser's own touch panning/zoom so our handlers fully own
+     trackpad, wheel and touch gestures. */
+  touch-action: none;
 }
 
 .workspace-scroll-wrapper {
-  display: inline-block;
-  vertical-align: middle;
+  margin: auto;
   position: relative;
-  text-align: left;
-  white-space: normal;
+  flex: 0 0 auto;
 }
 
 .workspace-pasteboard {
@@ -384,22 +379,19 @@ html, body {
   100% { transform: scale(1.3); opacity: 0; }
 }
 
-/* Sidebar Options Panel */
 .sidebar {
   background-color: var(--bg-panel);
   border-left: 1px solid var(--border-main);
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .sidebar-panel {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+  flex-shrink: 0;
 }
 
 /* Numbered Step groups to guide user */
@@ -983,9 +975,8 @@ select option {
   border-right: 1px dashed rgba(255, 255, 255, 0.3);
 }
 
-/* About footer styled cards */
 .about-footer {
-  margin-top: 12px;
+  margin-top: auto;
   padding: 16px 20px;
   border-top: 1px solid var(--border-main);
   background-color: var(--bg-panel);
@@ -993,6 +984,7 @@ select option {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .about-author {

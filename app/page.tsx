@@ -454,35 +454,35 @@ export default function PlanarApp() {
     const container = workspaceRef.current;
     if (!container) return;
 
-    let lastTrackpadTime = 0;
-
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
 
-      const now = Date.now();
+      // --- Classify the gesture (per-event, no fragile time-based latch) ---
+      //
+      // Pinch-to-zoom on a trackpad (and Ctrl/Cmd + wheel on a mouse) arrives
+      // as a wheel event with ctrlKey/metaKey set by the browser.
+      const isPinch = e.ctrlKey || e.metaKey;
 
-      // Check if the current event shows any trackpad-specific signature:
-      // 1. Horizontal scrolling (deltaX !== 0)
-      // 2. Fractional scrolling (fractional deltaY or deltaX)
-      // 3. Very small deltas (Math.abs(deltaY) < 4), which are typical of trackpad start/precision swipes but not mouse wheel notches
-      const isTrackpadEvent = e.deltaX !== 0 || e.deltaX % 1 !== 0 || e.deltaY % 1 !== 0 || (e.deltaY !== 0 && Math.abs(e.deltaY) < 4);
+      // Physical mouse wheels emit chunky, vertical-only notches. The legacy
+      // (but still-present in Chrome/Safari/Firefox) `wheelDeltaY` is an exact
+      // multiple of 120 for a real wheel, whereas a trackpad two-finger scroll
+      // produces fine-grained values, frequent horizontal deltas, and is never
+      // a clean multiple of 120. This is far more reliable than guessing from
+      // delta magnitude, which macOS momentum scrolling makes ambiguous.
+      const wheelDeltaY = (e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY;
+      const isMouseWheel =
+        !isPinch &&
+        e.deltaX === 0 &&
+        (wheelDeltaY !== undefined && wheelDeltaY !== 0
+          ? Math.abs(wheelDeltaY) % 120 === 0
+          : e.deltaMode !== 0); // line/page delta mode is mouse-wheel only
 
-      if (isTrackpadEvent) {
-        lastTrackpadTime = now;
-      }
-
-      // Treat as trackpad if we saw a trackpad signature in the last 1000ms
-      const isTrackpad = (now - lastTrackpadTime) < 1000;
-
-      // We zoom if:
-      // - User pinches on trackpad (ctrlKey/metaKey is true)
-      // - OR we are NOT on a trackpad (meaning it's a physical mouse wheel scroll)
-      const shouldZoom = e.ctrlKey || e.metaKey || !isTrackpad;
+      const shouldZoom = isPinch || isMouseWheel;
 
       if (shouldZoom) {
         // Zoom
         let factor = 1.0;
-        if (e.ctrlKey || e.metaKey) {
+        if (isPinch) {
           // Trackpad pinch-to-zoom: continuous and smooth
           const zoomDelta = -e.deltaY * 0.012;
           factor = Math.exp(zoomDelta);
