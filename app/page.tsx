@@ -139,11 +139,8 @@ export default function PlanarApp() {
   const [paperPreset, setPaperPreset] = useState<string>("A4");
   const [paperWidth, setPaperWidth] = useState<number>(210); // in mm
   const [paperHeight, setPaperHeight] = useState<number>(297); // in mm
-  const [sheetMargin, setSheetMargin] = useState<number>(5); // in mm
-  const [gluingMargin, setGluingMargin] = useState<number>(10); // in mm
-  const [layoutMode, setLayoutMode] = useState<"flow" | "tiled" | "maximise">("flow");
-  const [maxCols, setMaxCols] = useState<number>(2); // for maximise mode
-  const [maxRows, setMaxRows] = useState<number>(2); // for maximise mode
+  const [sheetMargin, setSheetMargin] = useState<number>(50.8); // in mm (2 inches default)
+  const gluingMargin = 0; // margins act as overlap directly in dynamic grid tiling
   const [allowRotation, setAllowRotation] = useState<boolean>(false);
   const [showOverlapGuides, setShowOverlapGuides] = useState<boolean>(true);
 
@@ -210,11 +207,19 @@ export default function PlanarApp() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = document.activeElement?.tagName.toLowerCase();
+      if (tag === "input" || tag === "select" || tag === "textarea") {
+        return;
+      }
+
       if (e.code === "Space") {
-        const tag = document.activeElement?.tagName.toLowerCase();
-        if (tag !== "input" && tag !== "select" && tag !== "textarea") {
+        e.preventDefault();
+        setSpacePressed(true);
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        if (selectedImageId) {
           e.preventDefault();
-          setSpacePressed(true);
+          setImages((prev) => prev.filter((i) => i.id !== selectedImageId));
+          setSelectedImageId(null);
         }
       }
     };
@@ -231,7 +236,7 @@ export default function PlanarApp() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, []);
+  }, [selectedImageId]);
 
   const handleWorkspaceMouseDown = (e: React.MouseEvent) => {
     // Start panning on middle-click, or when space is pressed, OR on left-click on any empty canvas area (not an image wrapper)
@@ -314,8 +319,9 @@ export default function PlanarApp() {
           let newX = info.initialX + deltaX;
           let newY = info.initialY + deltaY;
 
-          newX = Math.max(-50, Math.min(newX, totalWidth + 50));
-          newY = Math.max(-50, Math.min(newY, totalHeight + 50));
+          const { cols, rows, usableWidth, usableHeight } = getLayoutDimensions();
+          newX = Math.max(-50, Math.min(newX, cols * usableWidth + 50));
+          newY = Math.max(-50, Math.min(newY, rows * usableHeight + 50));
 
           return { ...img, x: newX, y: newY };
         } 
@@ -525,7 +531,10 @@ export default function PlanarApp() {
 
     container.addEventListener("wheel", handleWheel, { passive: false });
     return () => container.removeEventListener("wheel", handleWheel);
-  }, []);
+    // Depends on `mounted`: the component renders `null` until mounted is true,
+    // so on the very first render workspaceRef.current is null. Re-run once the
+    // canvas actually exists, otherwise the listener never attaches.
+  }, [mounted]);
 
   // Touch panning and pinch-to-zoom on mobile devices
   useEffect(() => {
@@ -638,7 +647,9 @@ export default function PlanarApp() {
       container.removeEventListener("touchmove", handleTouchMove);
       container.removeEventListener("touchend", handleTouchEnd);
     };
-  }, []);
+    // See note on the wheel effect: re-run after `mounted` so the listeners
+    // attach to the canvas that only exists once the component renders.
+  }, [mounted]);
 
   // Global window drag and drop listener (unconditional image upload in any state)
   useEffect(() => {
@@ -821,25 +832,10 @@ export default function PlanarApp() {
           if (file.type === "image/png") {
             getImageBounds(img).then((bounds) => {
               newImg.bounds = bounds;
-              setImages((prev) => {
-                const next = [...prev, newImg];
-                // In maximise mode, we auto-scale on import, otherwise distribute normally
-                if (layoutMode === "maximise") {
-                  setTimeout(() => maximiseImagesToPaperGrid(), 50); // small delay to ensure state updates
-                  return next;
-                }
-                return distributeImagesList(next);
-              });
+              setImages((prev) => distributeImagesList([...prev, newImg]));
             });
           } else {
-            setImages((prev) => {
-              const next = [...prev, newImg];
-              if (layoutMode === "maximise") {
-                setTimeout(() => maximiseImagesToPaperGrid(), 50);
-                return next;
-              }
-              return distributeImagesList(next);
-            });
+            setImages((prev) => distributeImagesList([...prev, newImg]));
           }
         };
         img.src = dataUrl;
@@ -1132,204 +1128,50 @@ export default function PlanarApp() {
     return "none";
   };
 
-  // Maximise Layout Mode - Automatically scale images to maximum paper size grid, respecting print margins
-  const maximiseImagesToPaperGrid = () => {
-    if (images.length === 0) return;
-
-    // Calculate total paper poster boundaries
-    const pitchW = paperWidth - gluingMargin;
-    const pitchH = paperHeight - gluingMargin;
-    const totalGridW = maxCols * pitchW + gluingMargin;
-    const totalGridH = maxRows * pitchH + gluingMargin;
-
-    // Outermost margins calculation
-    const printableW = totalGridW - 2 * sheetMargin;
-    const printableH = totalGridH - 2 * sheetMargin;
-
-    if (images.length === 1) {
-      const img = images[0];
-      const cropRatioW = 1 - (img.crop.left + img.crop.right) / 100;
-      const cropRatioH = 1 - (img.crop.top + img.crop.bottom) / 100;
-
-      // Current layout size (rotated bounding box)
-      const { w: layoutW, h: layoutH } = getImageLayoutSize(img);
-      const aspect = layoutW / layoutH;
-
-      let newLayoutW = 0;
-      let newLayoutH = 0;
-
-      if (aspect > printableW / printableH) {
-        newLayoutW = printableW;
-        newLayoutH = printableW / aspect;
-      } else {
-        newLayoutH = printableH;
-        newLayoutW = printableH * aspect;
-      }
-
-      // Scale factor
-      const scale = newLayoutW / layoutW;
-
-      // Scaled unrotated size
-      const newFullW = img.targetWidth * scale;
-      const newFullH = img.targetHeight * scale;
-
-      const newVisibleW = newFullW * cropRatioW;
-      const newVisibleH = newFullH * cropRatioH;
-
-      // Center coordinates
-      const targetCenterX = sheetMargin + printableW / 2;
-      const targetCenterY = sheetMargin + printableH / 2;
-
-      const newX = targetCenterX - newVisibleW / 2;
-      const newY = targetCenterY - newVisibleH / 2;
-
-      setImages([
-        {
-          ...img,
-          targetWidth: newFullW,
-          targetHeight: newFullH,
-          x: newX,
-          y: newY,
-        }
-      ]);
-    } else {
-      // Multiple images packing and group scaling
-      // 1. Temporarily scale all images down proportionally so they fit within the canvas size
-      // We want each image to be small enough so they can easily pack.
-      const targetMaxImgDim = Math.min(printableW, printableH) / Math.max(2, Math.ceil(Math.sqrt(images.length)));
-      const preScaledImages = images.map((img) => {
-        const { w: layoutW, h: layoutH } = getImageLayoutSize(img);
-        const maxDim = Math.max(layoutW, layoutH);
-        let scaleDown = 1;
-        if (maxDim > targetMaxImgDim) {
-          scaleDown = targetMaxImgDim / maxDim;
-        }
-        return {
-          ...img,
-          targetWidth: img.targetWidth * scaleDown,
-          targetHeight: img.targetHeight * scaleDown,
-        };
-      });
-
-      // 2. Pack the pre-scaled images onto the canvas using the distribute packing algorithm
-      const packed = distributeImagesList(preScaledImages);
-
-      let minX = Infinity, minY = Infinity;
-      let maxX = -Infinity, maxY = -Infinity;
-
-      packed.forEach((img) => {
-        const { w, h } = getImageLayoutSize(img);
-        if (img.x < minX) minX = img.x;
-        if (img.y < minY) minY = img.y;
-        if (img.x + w > maxX) maxX = img.x + w;
-        if (img.y + h > maxY) maxY = img.y + h;
-      });
-
-      if (minX === Infinity) return;
-
-      const boxW = maxX - minX;
-      const boxH = maxY - minY;
-
-      if (boxW <= 0 || boxH <= 0) return;
-
-      // 3. Scale group proportionally to fill printable dimensions
-      const scale = Math.min(printableW / boxW, printableH / boxH);
-
-      // Centering offset
-      const finalW = boxW * scale;
-      const finalH = boxH * scale;
-      const dx = sheetMargin + (printableW - finalW) / 2 - minX * scale;
-      const dy = sheetMargin + (printableH - finalH) / 2 - minY * scale;
-
-      const scaled = packed.map((img) => {
-        return {
-          ...img,
-          targetWidth: img.targetWidth * scale,
-          targetHeight: img.targetHeight * scale,
-          x: img.x * scale + dx,
-          y: img.y * scale + dy,
-        };
-      });
-
-      setImages(scaled);
-    }
-  };
-
-  // Trigger auto-scaling when settings or image shapes (crop/rotation) change in maximise mode
-  const imagesLayoutKey = images.map(img => 
-    `${img.id}:${img.crop.shape}:${img.crop.left}:${img.crop.right}:${img.crop.top}:${img.crop.bottom}:${img.rotation}:${img.width}:${img.height}`
-  ).join('|');
-
-  useEffect(() => {
-    if (images.length === 0) return;
-    if (layoutMode === "maximise") {
-      maximiseImagesToPaperGrid();
-    }
-  }, [layoutMode, maxCols, maxRows, paperWidth, paperHeight, sheetMargin, gluingMargin, imagesLayoutKey]);
-
   // Page layout boundaries
   const getLayoutDimensions = () => {
-    if (images.length === 0 && layoutMode !== "maximise") {
-      return { totalWidth: paperWidth, totalHeight: paperHeight, cols: 1, rows: 1, pagesCount: 1 };
-    }
+    const usableWidth = paperWidth - 2 * sheetMargin;
+    const usableHeight = paperHeight - 2 * sheetMargin;
 
-    if (layoutMode === "flow") {
-      const maxPageIndex = images.reduce((max, img) => {
-        return Math.max(max, getImgPageIndex(img));
-      }, 0);
-      const pagesCount = maxPageIndex + 1;
-      return {
-        totalWidth: paperWidth,
-        totalHeight: pagesCount * paperHeight,
-        cols: 1,
-        rows: pagesCount,
-        pagesCount
-      };
-    } else if (layoutMode === "tiled") {
-      const pitchW = paperWidth - gluingMargin;
-      const pitchH = paperHeight - gluingMargin;
-
-      let maxRight = paperWidth;
-      let maxBottom = paperHeight;
-
-      images.forEach((img) => {
-        const { w: layoutW, h: layoutH } = getImageLayoutSize(img);
-        const rightEdge = img.x + layoutW;
-        const bottomEdge = img.y + layoutH;
-        if (rightEdge > maxRight) maxRight = rightEdge;
-        if (bottomEdge > maxBottom) maxBottom = bottomEdge;
-      });
-
-      const cols = Math.max(1, Math.ceil((maxRight - 0.1) / pitchW));
-      const rows = Math.max(1, Math.ceil((maxBottom - 0.1) / pitchH));
-      const pagesCount = cols * rows;
-
-      return {
-        totalWidth: cols * pitchW + gluingMargin,
-        totalHeight: rows * pitchH + gluingMargin,
-        cols,
-        rows,
-        pagesCount
-      };
-    } else {
-      // Maximise Mode - Fixed cols and rows paper poster grid
-      const pitchW = paperWidth - gluingMargin;
-      const pitchH = paperHeight - gluingMargin;
-      return {
-        totalWidth: maxCols * pitchW + gluingMargin,
-        totalHeight: maxRows * pitchH + gluingMargin,
-        cols: maxCols,
-        rows: maxRows,
-        pagesCount: maxCols * maxRows
+    if (images.length === 0) {
+      return { 
+        totalWidth: paperWidth, 
+        totalHeight: paperHeight, 
+        cols: 1, 
+        rows: 1, 
+        pagesCount: 1,
+        usableWidth,
+        usableHeight
       };
     }
+
+    let maxX = 0;
+    let maxY = 0;
+
+    images.forEach((img) => {
+      const { w: layoutW, h: layoutH } = getImageLayoutSize(img);
+      const rightEdge = img.x + layoutW;
+      const bottomEdge = img.y + layoutH;
+      if (rightEdge > maxX) maxX = rightEdge;
+      if (bottomEdge > maxY) maxY = bottomEdge;
+    });
+
+    const cols = Math.max(1, Math.ceil(maxX / usableWidth));
+    const rows = Math.max(1, Math.ceil(maxY / usableHeight));
+    const pagesCount = cols * rows;
+
+    return {
+      totalWidth: cols * usableWidth + 2 * sheetMargin,
+      totalHeight: rows * usableHeight + 2 * sheetMargin,
+      cols,
+      rows,
+      pagesCount,
+      usableWidth,
+      usableHeight
+    };
   };
 
-  const getImgPageIndex = (img: ImageItem): number => {
-    return Math.floor(img.y / paperHeight);
-  };
-
-  const { totalWidth, totalHeight, cols, rows, pagesCount } = getLayoutDimensions();
+  const { totalWidth, totalHeight, cols, rows, pagesCount, usableWidth, usableHeight } = getLayoutDimensions();
 
   // Fit the canvas pasteboard to the available viewport space
   const fitToViewport = () => {
@@ -1340,7 +1182,9 @@ export default function PlanarApp() {
     const containerH = container.clientHeight;
 
     if (containerW > 0 && containerH > 0) {
-      const neededW = (totalWidth + 80) * PX_PER_MM;
+      // Include sheets grid width plus human width (618) plus gap (20) plus horizontal margins (80)
+      const neededW = (totalWidth + 618 + 20 + 80) * PX_PER_MM;
+      // Include sheets grid height plus vertical margins (80)
       const neededH = (totalHeight + 80) * PX_PER_MM;
       const zoomW = containerW / neededW;
       const zoomH = containerH / neededH;
@@ -1357,183 +1201,50 @@ export default function PlanarApp() {
     }
   };
 
-  // Auto-fit to viewport on initial mount or when layout sizes change
-  useEffect(() => {
-    if (mounted) {
-      fitToViewport();
-    }
-  }, [mounted, totalWidth, totalHeight]);
-
-  // Window resize/rotation listener to recalculate page fit
-  useEffect(() => {
-    if (!mounted) return;
-    const handleResize = () => {
-      fitToViewport();
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [mounted, totalWidth, totalHeight]);
-
   // Distribute packing algorithm
   const distributeImagesList = (items: ImageItem[]): ImageItem[] => {
     if (items.length === 0) return items;
 
-    const margin = sheetMargin;
-    const spacing = 3; 
-
-    // Printable boundaries based on layout modes
-    let printableW = paperWidth - 2 * margin;
-    let printableH = paperHeight - 2 * margin;
-
-    if (layoutMode === "maximise") {
-      const pitchW = paperWidth - gluingMargin;
-      const pitchH = paperHeight - gluingMargin;
-      printableW = (maxCols * pitchW + gluingMargin) - 2 * margin;
-      printableH = (maxRows * pitchH + gluingMargin) - 2 * margin;
-    }
-
-    const normalImages = items.filter((img) => {
+    const spacing = 10; // 10mm gap between packed images
+    const usableWidth = paperWidth - 2 * sheetMargin;
+    
+    // Calculate layout sizes for all items
+    const itemsWithSize = items.map(img => {
       const { w, h } = getImageLayoutSize(img);
-      return (w <= printableW && h <= printableH) || (allowRotation && h <= printableW && w <= printableH);
+      return { img, w, h };
     });
 
-    const largeImages = items.filter((img) => !normalImages.includes(img));
+    // Shelf width is bounded by A4 printable width or the widest image
+    const maxImgW = Math.max(...itemsWithSize.map(x => x.w));
+    const shelfWidth = Math.max(usableWidth, maxImgW);
 
-    const sortedNormal = [...normalImages].sort((a, b) => {
-      const { w: wA, h: hA } = getImageLayoutSize(a);
-      const { w: wB, h: hB } = getImageLayoutSize(b);
-      return (wB * hB) - (wA * hA);
-    });
+    // Sort by height descending to pack taller items first
+    const sorted = [...itemsWithSize].sort((a, b) => b.h - a.h);
 
-    interface PlacedRect {
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-    }
-    const pagePlacements: PlacedRect[][] = [[]];
+    const placed: ImageItem[] = [];
+    let currentX = 0;
+    let currentY = 0;
+    let currentShelfHeight = 0;
 
-    const positionedNormal = sortedNormal.map((img) => {
-      const { w: imgW, h: imgH } = getImageLayoutSize(img);
-
-      for (let pageIdx = 0; pageIdx < pagePlacements.length; pageIdx++) {
-        const placed = pagePlacements[pageIdx];
-        const fitPos = findSpace(imgW, imgH, printableW, printableH, placed, margin, spacing, allowRotation);
-        if (fitPos) {
-          placed.push({ x: fitPos.x, y: fitPos.y, w: fitPos.w, h: fitPos.h });
-          
-          let absX = fitPos.x;
-          let absY = (layoutMode === "flow") 
-            ? pageIdx * paperHeight + fitPos.y 
-            : fitPos.y;
-
-          return {
-            ...img,
-            x: absX,
-            y: absY,
-            rotation: (img.rotation + fitPos.rotation) % 360,
-          };
-        }
+    sorted.forEach((item) => {
+      // Start a new shelf if the item exceeds shelfWidth
+      if (currentX + item.w > shelfWidth + 0.1 && currentX > 0) {
+        currentX = 0;
+        currentY += currentShelfHeight + spacing;
+        currentShelfHeight = 0;
       }
 
-      const newPageIdx = pagePlacements.length;
-      pagePlacements.push([]);
-      const placed = pagePlacements[newPageIdx];
-      const fitPos = findSpace(imgW, imgH, printableW, printableH, placed, margin, spacing, allowRotation);
-      
-      const finalPos = fitPos || { x: margin, y: margin, w: imgW, h: imgH, rotation: 0 };
-      placed.push({ x: finalPos.x, y: finalPos.y, w: finalPos.w, h: finalPos.h });
+      placed.push({
+        ...item.img,
+        x: currentX,
+        y: currentY,
+      });
 
-      let absX = finalPos.x;
-      let absY = (layoutMode === "flow") 
-        ? newPageIdx * paperHeight + finalPos.y 
-        : finalPos.y;
-
-      return {
-        ...img,
-        x: absX,
-        y: absY,
-        rotation: (img.rotation + finalPos.rotation) % 360,
-      };
+      currentShelfHeight = Math.max(currentShelfHeight, item.h);
+      currentX += item.w + spacing;
     });
 
-    const positionedLarge = largeImages.map((img, idx) => {
-      let absX = margin;
-      let absY = (layoutMode === "flow") 
-        ? idx * paperHeight + margin 
-        : margin;
-
-      return {
-        ...img,
-        x: absX,
-        y: absY,
-        rotation: 0,
-      };
-    });
-
-    return [...positionedNormal, ...positionedLarge];
-  };
-
-  const findSpace = (
-    w: number,
-    h: number,
-    printableW: number,
-    printableH: number,
-    placed: { x: number; y: number; w: number; h: number }[],
-    margin: number,
-    spacing: number,
-    allowRot: boolean
-  ) => {
-    const candidates = [{ x: margin, y: margin }];
-    placed.forEach((rect) => {
-      candidates.push({ x: rect.x + rect.w + spacing, y: rect.y });
-      candidates.push({ x: rect.x, y: rect.y + rect.h + spacing });
-    });
-
-    candidates.sort((a, b) => {
-      if (Math.abs(a.y - b.y) > 0.01) return a.y - b.y;
-      return a.x - b.x;
-    });
-
-    for (const cand of candidates) {
-      if (cand.x + w <= margin + printableW && cand.y + h <= margin + printableH) {
-        let overlap = false;
-        for (const rect of placed) {
-          if (checkOverlap(cand.x, cand.y, w, h, rect.x, rect.y, rect.w, rect.h, spacing)) {
-            overlap = true;
-            break;
-          }
-        }
-        if (!overlap) return { x: cand.x, y: cand.y, w, h, rotation: 0 };
-      }
-
-      if (allowRot) {
-        if (cand.x + h <= margin + printableW && cand.y + w <= margin + printableH) {
-          let overlap = false;
-          for (const rect of placed) {
-            if (checkOverlap(cand.x, cand.y, h, w, rect.x, rect.y, rect.w, rect.h, spacing)) {
-              overlap = true;
-              break;
-            }
-          }
-          if (!overlap) return { x: cand.x, y: cand.y, w: h, h: w, rotation: 90 };
-        }
-      }
-    }
-    return null;
-  };
-
-  const checkOverlap = (
-    x1: number, y1: number, w1: number, h1: number,
-    x2: number, y2: number, w2: number, h2: number,
-    spacing: number
-  ) => {
-    return !(
-      x1 + w1 + spacing <= x2 ||
-      x2 + w2 + spacing <= x1 ||
-      y1 + h1 + spacing <= y2 ||
-      y2 + h2 + spacing <= y1
-    );
+    return placed;
   };
 
   const handleGlobalMouseUp = () => {
@@ -1631,77 +1342,12 @@ export default function PlanarApp() {
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    let pageLeft = 0;
-    let pageTop = 0;
+    const { cols, usableWidth, usableHeight } = getLayoutDimensions();
+    const col = pageIndex % cols;
+    const row = Math.floor(pageIndex / cols);
 
-    if (layoutMode === "flow") {
-      pageLeft = 0;
-      pageTop = pageIndex * paperHeight;
-    } else {
-      // Tiled & Maximise Modes
-      const pitchW = paperWidth - gluingMargin;
-      const pitchH = paperHeight - gluingMargin;
-      
-      const maxImgRight = images.reduce((max, img) => {
-        const { w } = getImageLayoutSize(img);
-        return Math.max(max, img.x + w);
-      }, paperWidth);
-      const colsCount = layoutMode === "maximise" ? maxCols : Math.max(1, Math.ceil((maxImgRight - 0.1) / pitchW));
-      
-      const col = pageIndex % colsCount;
-      const row = Math.floor(pageIndex / colsCount);
-      pageLeft = col * pitchW;
-      pageTop = row * pitchH;
-    }
-
-    // Draw overlap gluing dashed guides
-    if (layoutMode !== "flow" && gluingMargin > 0 && showOverlapGuides) {
-      ctx.strokeStyle = "#cccccc";
-      ctx.lineWidth = 0.5 * renderScale;
-      ctx.setLineDash([2 * renderScale, 2 * renderScale]);
-
-      const pitchW = paperWidth - gluingMargin;
-      const pitchH = paperHeight - gluingMargin;
-      const maxImgRight = images.reduce((max, img) => {
-        const { w } = getImageLayoutSize(img);
-        return Math.max(max, img.x + w);
-      }, paperWidth);
-      const maxImgBottom = images.reduce((max, img) => {
-        const { h } = getImageLayoutSize(img);
-        return Math.max(max, img.y + h);
-      }, paperHeight);
-      
-      const colsCount = layoutMode === "maximise" ? maxCols : Math.max(1, Math.ceil((maxImgRight - 0.1) / pitchW));
-      const rowsCount = layoutMode === "maximise" ? maxRows : Math.max(1, Math.ceil((maxImgBottom - 0.1) / pitchH));
-      const col = pageIndex % colsCount;
-      const row = Math.floor(pageIndex / colsCount);
-
-      if (col > 0) {
-        ctx.beginPath();
-        ctx.moveTo(gluingMargin * renderScale, 0);
-        ctx.lineTo(gluingMargin * renderScale, paperHeight * renderScale);
-        ctx.stroke();
-      }
-      if (col < colsCount - 1) {
-        ctx.beginPath();
-        ctx.moveTo((paperWidth - gluingMargin) * renderScale, 0);
-        ctx.lineTo((paperWidth - gluingMargin) * renderScale, paperHeight * renderScale);
-        ctx.stroke();
-      }
-      if (row > 0) {
-        ctx.beginPath();
-        ctx.moveTo(0, gluingMargin * renderScale);
-        ctx.lineTo(paperWidth * renderScale, gluingMargin * renderScale);
-        ctx.stroke();
-      }
-      if (row < rowsCount - 1) {
-        ctx.beginPath();
-        ctx.moveTo(0, (paperHeight - gluingMargin) * renderScale);
-        ctx.lineTo(paperWidth * renderScale, (paperHeight - gluingMargin) * renderScale);
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-    }
+    const pageLeft = col * usableWidth;
+    const pageTop = row * usableHeight;
 
     for (const img of images) {
       const { w: visibleW, h: visibleH } = getImageVisibleSize(img);
@@ -1710,9 +1356,9 @@ export default function PlanarApp() {
       const imgTop = img.y;
 
       const intersects = 
-        imgLeft < pageLeft + paperWidth &&
+        imgLeft < pageLeft + usableWidth &&
         imgLeft + layoutW > pageLeft &&
-        imgTop < pageTop + paperHeight &&
+        imgTop < pageTop + usableHeight &&
         imgTop + layoutH > pageTop;
 
       if (!intersects) continue;
@@ -1729,12 +1375,14 @@ export default function PlanarApp() {
       const relX = imgLeft - pageLeft;
       const relY = imgTop - pageTop;
 
-      const centerX = (relX + visibleW / 2) * renderScale;
-      const centerY = (relY + visibleH / 2) * renderScale;
+      const canvasX = relX + sheetMargin;
+      const canvasY = relY + sheetMargin;
+
+      const centerX = (canvasX + visibleW / 2) * renderScale;
+      const centerY = (canvasY + visibleH / 2) * renderScale;
       ctx.translate(centerX, centerY);
       ctx.rotate((img.rotation * Math.PI) / 180);
 
-      // Perform crop clipping natively on PDF Canvas
       ctx.beginPath();
       const hw = (visibleW / 2) * renderScale;
       const hh = (visibleH / 2) * renderScale;
@@ -1793,83 +1441,71 @@ export default function PlanarApp() {
 
   if (!mounted) return null;
 
-  // Render Visual Pages Sheets Preview (applying PX_PER_MM)
   const renderSheets = () => {
+    const { cols, rows, usableWidth, usableHeight } = getLayoutDimensions();
     const sheets = [];
-    if (layoutMode === "flow") {
-      for (let i = 0; i < pagesCount; i++) {
-        sheets.push(
+
+    if (cols === 1 && rows === 1) {
+      sheets.push(
+        <div 
+          key="sheet-0-0"
+          className="paper-sheet"
+          style={{
+            width: `${paperWidth * PX_PER_MM}px`,
+            height: `${paperHeight * PX_PER_MM}px`,
+            left: 0,
+            top: 0,
+            border: "1px solid #dcdcdc",
+            backgroundColor: "#ffffff",
+          }}
+        >
           <div 
-            key={`sheet-${i}`}
-            className="paper-sheet"
+            className="print-safe-margin"
             style={{
-              width: `${paperWidth * PX_PER_MM}px`,
-              height: `${paperHeight * PX_PER_MM}px`,
-              left: 0,
-              top: `${i * (paperHeight + 10) * PX_PER_MM}px`,
+              position: "absolute",
+              top: `${sheetMargin * PX_PER_MM}px`,
+              left: `${sheetMargin * PX_PER_MM}px`,
+              right: `${sheetMargin * PX_PER_MM}px`,
+              bottom: `${sheetMargin * PX_PER_MM}px`,
+              border: "1px dashed rgba(128, 128, 128, 0.4)",
             }}
-          >
-            <div 
-              className="print-safe-margin"
-              style={{
-                top: `${sheetMargin * PX_PER_MM}px`,
-                left: `${sheetMargin * PX_PER_MM}px`,
-                right: `${sheetMargin * PX_PER_MM}px`,
-                bottom: `${sheetMargin * PX_PER_MM}px`,
-              }}
-            />
-          </div>
-        );
-      }
+          />
+        </div>
+      );
     } else {
-      // Tiled & Maximise Modes
-      const pitchW = paperWidth - gluingMargin;
-      const pitchH = paperHeight - gluingMargin;
+      sheets.push(
+        <div
+          key="printable-grid-bg"
+          style={{
+            position: "absolute",
+            width: `${cols * usableWidth * PX_PER_MM}px`,
+            height: `${rows * usableHeight * PX_PER_MM}px`,
+            left: `${sheetMargin * PX_PER_MM}px`,
+            top: `${sheetMargin * PX_PER_MM}px`,
+            backgroundColor: "#ffffff",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.05)",
+            border: "1px solid #e2e2e2",
+          }}
+        />
+      );
 
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           sheets.push(
             <div
               key={`sheet-${c}-${r}`}
-              className="paper-sheet"
               style={{
+                position: "absolute",
                 width: `${paperWidth * PX_PER_MM}px`,
                 height: `${paperHeight * PX_PER_MM}px`,
-                left: `${c * pitchW * PX_PER_MM}px`,
-                top: `${r * pitchH * PX_PER_MM}px`,
+                left: `${c * usableWidth * PX_PER_MM}px`,
+                top: `${r * usableHeight * PX_PER_MM}px`,
+                border: "1px dotted rgba(128, 128, 128, 0.5)",
+                backgroundColor: "rgba(255, 255, 255, 0.02)",
+                pointerEvents: "none",
+                zIndex: 15,
               }}
-            >
-              <div 
-                className="print-safe-margin"
-                style={{
-                  top: `${sheetMargin * PX_PER_MM}px`,
-                  left: `${sheetMargin * PX_PER_MM}px`,
-                  right: `${sheetMargin * PX_PER_MM}px`,
-                  bottom: `${sheetMargin * PX_PER_MM}px`,
-                }}
-              />
-              
-              {c > 0 && showOverlapGuides && (
-                <div 
-                  className="gluing-margin-overlay" 
-                  style={{ top: 0, left: 0, width: `${gluingMargin * PX_PER_MM}px`, height: "100%" }}
-                >
-                  <div className="overlap-label-vertical">
-                    <Scissors size={8} style={{ verticalAlign: "middle" }}/> GLUE OVERLAP
-                  </div>
-                </div>
-              )}
-              {r > 0 && showOverlapGuides && (
-                <div 
-                  className="gluing-margin-overlay" 
-                  style={{ top: 0, left: 0, width: "100%", height: `${gluingMargin * PX_PER_MM}px` }}
-                >
-                  <div className="overlap-label-horizontal">
-                    <Scissors size={8} style={{ verticalAlign: "middle" }}/> GLUE OVERLAP
-                  </div>
-                </div>
-              )}
-            </div>
+            />
           );
         }
       }
@@ -1879,7 +1515,6 @@ export default function PlanarApp() {
 
   return (
     <div className="app-container">
-      {/* Top Header */}
       <header className="app-header">
         <div className="logo-section">
           <img 
@@ -1891,7 +1526,6 @@ export default function PlanarApp() {
         </div>
         
         <div className="header-controls">
-          {/* Unit Switcher */}
           <div className="segmented-control">
             {(["mm", "cm", "in"] as const).map((u) => (
               <button
@@ -1904,18 +1538,14 @@ export default function PlanarApp() {
             ))}
           </div>
 
-          {/* Theme Toggle */}
           <button className="icon-btn" onClick={toggleTheme} title="Toggle light/dark mode">
             {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
           </button>
         </div>
       </header>
 
-      {/* Main Area */}
       <main className="main-content">
-        {/* Center Canvas Viewport */}
         <div className="workspace-viewport">
-          {/* Calibration active banner */}
           {isCalibrationActive && selectedImage && (
             <div className="banner calibration-banner" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
               <Ruler size={16} className="upload-icon" style={{ margin: 0, color: "var(--accent-color)" }} />
@@ -1959,7 +1589,6 @@ export default function PlanarApp() {
             </div>
           )}
 
-          {/* Background removal loading overlay */}
           {bgRemovalProgress !== null && (
             <div className="banner" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
               <RefreshCw size={14} className="animate-spin" style={{ animation: "spin 2s linear infinite" }} />
@@ -1972,7 +1601,6 @@ export default function PlanarApp() {
             </div>
           )}
 
-          {/* Cropping Active Guide Banner */}
           {croppingImageId && selectedImage && (
             <div className="banner" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} style={{ borderColor: "var(--accent-color)" }}>
               <Crop size={16} style={{ color: "var(--accent-color)" }} />
@@ -1992,7 +1620,6 @@ export default function PlanarApp() {
             </div>
           )}
 
-          {/* Zoom Controls */}
           <div className="zoom-controls" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
             <button className="zoom-btn" onClick={handleZoomIn} title="Zoom In"><Plus size={14} /></button>
             <button className="zoom-btn" onClick={handleZoomOut} title="Zoom Out"><Minus size={14} /></button>
@@ -2015,16 +1642,28 @@ export default function PlanarApp() {
                 : "default",
             }}
           >
-            {/* Scroll Wrapper to ensure correct overflow sizes */}
             <div
             className="workspace-scroll-wrapper"
             style={{
-              width: `${(totalWidth + 80) * PX_PER_MM * zoom}px`,
+              width: `${(totalWidth + 618 + 20 + 80) * PX_PER_MM * zoom}px`,
               height: `${(totalHeight + 80) * PX_PER_MM * zoom}px`,
               position: "relative",
             }}
           >
-            {/* Pasteboard Wrapper */}
+            <div
+              style={{
+                position: "absolute",
+                left: `${(40 + 618 + 20) * PX_PER_MM * zoom}px`,
+                top: `${40 * PX_PER_MM * zoom}px`,
+                width: `${totalWidth * PX_PER_MM * zoom}px`,
+                height: `${totalHeight * PX_PER_MM * zoom}px`,
+                overflow: "hidden",
+                pointerEvents: "none",
+                zIndex: 10,
+              }}
+            >
+            </div>
+
             <div 
               className="workspace-pasteboard"
               ref={pasteboardRef}
@@ -2035,14 +1674,39 @@ export default function PlanarApp() {
                 width: `${totalWidth * PX_PER_MM}px`,
                 height: `${totalHeight * PX_PER_MM}px`,
                 position: "absolute",
-                left: `${40 * PX_PER_MM * zoom}px`,
+                left: `${(40 + 618 + 20) * PX_PER_MM * zoom}px`,
                 top: `${40 * PX_PER_MM * zoom}px`,
               }}
             >
-              {/* Sheets Preview Layer */}
+              {/* Human Scale Figure (180cm tall) */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: `${-(618 + 20) * PX_PER_MM}px`,
+                  top: 0,
+                  width: `${618 * PX_PER_MM}px`,
+                  height: `${totalHeight * PX_PER_MM}px`,
+                  overflow: "hidden",
+                  pointerEvents: "none",
+                  zIndex: 2,
+                }}
+              >
+                <svg
+                  viewBox="0 0 83.5 243.2"
+                  style={{
+                    width: `${618 * PX_PER_MM}px`,
+                    height: `${1800 * PX_PER_MM}px`,
+                    fill: "currentColor",
+                    color: "var(--text-muted)",
+                    opacity: 0.25,
+                  }}
+                >
+                  <path d="M 22.574217,241.67349 C 22.224017,241.10685 22.223387,239.11924 22.572827,237.25659 C 23.034967,234.79314 22.608087,232.69372 21.006867,229.55505 C 18.887427,225.40062 18.832317,224.56245 19.524847,207.01596 C 20.239397,188.91152 20.229657,188.78403 18.043027,187.61378 L 15.841927,186.43579 L 16.048517,154.7725 C 16.162127,137.35769 16.205457,121.92805 16.144797,120.48441 C 16.075497,118.83546 14.369517,116.12188 11.556117,113.18556 C 9.0930169,110.61484 5.4394869,105.58204 3.4371669,102.00156 C 0.10170688,96.037191 -0.15588312,95.014611 0.36373685,89.800401 C 0.67567685,86.670247 1.1825869,80.509211 1.4902169,76.109211 C 2.0224969,68.496046 5.6058969,48.704473 6.6391069,47.671261 C 6.9071369,47.403233 9.0182469,46.464702 11.330467,45.585636 C 16.710457,43.540254 30.030647,34.782798 30.796227,32.78773 C 31.117927,31.949394 30.650567,29.203771 29.757647,26.686347 C 26.372107,17.141468 26.488367,14.689315 30.623477,8.4248053 C 34.801117,2.0958521 36.433417,1.3422121 44.111797,2.1972011 C 51.491627,3.0189471 53.880067,4.1457301 54.637287,7.1627611 C 55.495907,10.583749 54.449997,20.593711 53.092047,21.95166 C 52.510387,22.533313 52.036177,25.281711 52.038227,28.059211 C 52.042897,34.358752 54.919477,39.609211 58.366157,39.609211 C 61.690027,39.609211 65.887247,41.904241 70.450297,46.216781 C 74.246387,49.804474 74.387967,50.180384 75.081547,58.51341 C 76.064627,70.32466 79.106487,80.574379 82.259277,82.699188 C 83.460607,83.508822 83.416547,86.067563 82.080007,93.109211 C 81.453647,96.409211 80.745487,100.44993 80.506317,102.08858 C 80.267137,103.72723 79.163137,106.29651 78.052977,107.79808 C 76.942807,109.29966 76.034497,111.18464 76.034497,111.98693 C 76.034497,114.79527 74.768337,116.69549 71.913317,118.17188 L 69.034497,119.66057 L 69.034497,132.69334 C 69.034497,139.86136 69.461257,148.7373 69.982847,152.41766 C 70.504437,156.09801 71.139647,164.90508 71.394417,171.98891 C 71.839467,184.36361 71.769137,184.95175 69.600547,186.98891 C 66.671227,189.74072 65.563847,196.93707 65.919507,210.91039 C 66.107287,218.28802 65.808897,222.17611 64.978097,223.17717 C 64.309117,223.98324 63.761767,226.50137 63.761767,228.77302 C 63.761767,232.39393 64.271887,233.32702 67.898127,236.33919 C 74.685837,241.97743 73.860267,242.60921 59.704787,242.60921 L 47.375087,242.60921 L 48.381047,237.05929 C 49.149427,232.82009 49.053977,230.28126 47.976867,226.30929 C 47.048357,222.88524 46.561227,215.74734 46.550617,205.41004 C 46.540157,195.22853 46.143007,189.31909 45.420627,188.59617 C 44.676577,187.85157 43.182527,187.77198 40.920627,188.35647 L 37.534497,189.23146 L 36.746447,202.17033 C 36.256197,210.21982 36.344987,217.35703 36.981437,221.05765 C 37.802917,225.83421 37.723037,227.43561 36.575947,229.18629 C 35.790267,230.38539 35.009517,233.78359 34.840967,236.73784 L 34.534497,242.10921 L 28.872727,242.40648 C 25.730667,242.57145 22.927587,242.24524 22.574217,241.67349 z" />
+                </svg>
+              </div>
+
               {renderSheets()}
 
-              {/* Images Workspace Layer */}
               <div className="canvas-layer">
                 {images.map((img) => {
                   const isSelected = img.id === selectedImageId;
@@ -2079,8 +1743,8 @@ export default function PlanarApp() {
                       onMouseDown={(e) => handleImageMouseDown(e, img, "drag")}
                       onTouchStart={(e) => handleImageTouchStart(e, img, "drag")}
                       style={{
-                        left: `${img.x * PX_PER_MM}px`,
-                        top: `${img.y * PX_PER_MM}px`,
+                        left: `${(img.x + sheetMargin) * PX_PER_MM}px`,
+                        top: `${(img.y + sheetMargin) * PX_PER_MM}px`,
                         width: `${widthCss * PX_PER_MM}px`,
                         height: `${heightCss * PX_PER_MM}px`,
                         transform: `rotate(${img.rotation}deg)`,
@@ -2148,7 +1812,6 @@ export default function PlanarApp() {
                         ))}
                       </div>
 
-                      {/* Resizing and rotation control handles */}
                       {isSelected && !isCalibrationActive && !isCropping && (
                         <>
                           <div 
@@ -2183,10 +1846,8 @@ export default function PlanarApp() {
         </div>
       </div>
 
-        {/* Sidebar Panel */}
         <aside className="sidebar">
           {selectedImage && croppingImageId === selectedImage.id ? (
-            /* IMAGE CROPPING OPTIONS */
             <div className="sidebar-panel">
               <div className="sidebar-header">
                 <button className="sidebar-header-btn" onClick={stopCropping}>
@@ -2195,7 +1856,6 @@ export default function PlanarApp() {
                 </button>
               </div>
 
-              {/* Crop Ratio Presets */}
               <section className="sidebar-section">
                 <h2 className="sidebar-section-title">Crop Preset Ratio</h2>
                 <div className="input-group">
@@ -2214,7 +1874,6 @@ export default function PlanarApp() {
                 </div>
               </section>
 
-              {/* Crop Shape Presets */}
               <section className="sidebar-section">
                 <h2 className="sidebar-section-title">Crop Shape</h2>
                 <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -2334,7 +1993,6 @@ export default function PlanarApp() {
                 </div>
               </section>
 
-              {/* Crop border offsets */}
               <section className="sidebar-section">
                 <h2 className="sidebar-section-title">Crop Boundaries</h2>
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -2434,7 +2092,6 @@ export default function PlanarApp() {
 
             </div>
           ) : selectedImage ? (
-            /* ACTIVE IMAGE OPTIONS */
             <div className="sidebar-panel">
               <div className="sidebar-header">
                 <button 
@@ -2446,7 +2103,6 @@ export default function PlanarApp() {
                 </button>
               </div>
 
-              {/* Scale dimensions */}
               <section className="sidebar-section">
                 <h2 className="sidebar-section-title">Scale Image</h2>
                 <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
@@ -2512,12 +2168,10 @@ export default function PlanarApp() {
                 </div>
               </section>
 
-              {/* Processing Tools */}
               <section className="sidebar-section">
                 <h2 className="sidebar-section-title">Processing & Crop</h2>
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                   
-                  {/* Crop Trigger */}
                   <button 
                     className="btn btn-secondary" 
                     onClick={() => startCropping(selectedImage.id)}
@@ -2526,7 +2180,6 @@ export default function PlanarApp() {
                     Crop Image Bounds
                   </button>
 
-                  {/* Bounding box clip */}
                   {selectedImage.mimeType === "image/png" && selectedImage.bounds && (
                     <label className="checkbox-container">
                       <input
@@ -2551,7 +2204,6 @@ export default function PlanarApp() {
                     </label>
                   )}
 
-                  {/* Calibration */}
                   <button 
                     className="btn btn-secondary" 
                     onClick={startCalibration}
@@ -2561,7 +2213,6 @@ export default function PlanarApp() {
                     Calibrate Physical Size
                   </button>
 
-                  {/* Background removal */}
                   {!selectedImage.backgroundRemoved && (
                     <button 
                       className="btn btn-secondary" 
@@ -2576,7 +2227,6 @@ export default function PlanarApp() {
                 </div>
               </section>
 
-              {/* Destruction */}
               <section className="sidebar-section" style={{ borderBottom: "none" }}>
                 <button 
                   className="btn btn-danger" 
@@ -2591,10 +2241,8 @@ export default function PlanarApp() {
               </section>
             </div>
           ) : (
-            /* GENERAL DOCUMENT PANEL - split into visible progress steps */
             <div className="sidebar-panel">
               
-              {/* Step 1: Paper Configuration */}
               <div className="step-group">
                 <span className="step-number">01</span>
                 <h3 className="step-title">
@@ -2646,133 +2294,28 @@ export default function PlanarApp() {
                     </div>
                   )}
 
-                  <div className="settings-grid" style={{ marginTop: "4px" }}>
-                    <div className="input-group">
-                      <label className="input-label">Layout Mode</label>
-                      <select 
-                        className="select-field" 
-                        value={layoutMode} 
-                        onChange={(e) => {
-                          const nextMode = e.target.value as "flow" | "tiled" | "maximise";
-                          setLayoutMode(nextMode);
-                          if (nextMode === "maximise") {
-                            setTimeout(() => maximiseImagesToPaperGrid(), 50);
-                          }
-                        }}
-                      >
-                        <option value="flow">Flow (Separate Sheets)</option>
-                        <option value="tiled">Gluing Grid (Tiled)</option>
-                        <option value="maximise">Maximise (Fill Paper Grid)</option>
-                      </select>
-                    </div>
-                    
-                    {layoutMode === "flow" ? (
-                      <div className="input-group">
-                        <label className="input-label">Print Margin ({getUnitSymbol()})</label>
-                        <input
-                          type="number"
-                          step="any"
-                          className="input-field"
-                          value={Number(convertMmToActiveUnit(sheetMargin).toFixed(2))}
-                          onChange={(e) => {
-                            const val = parseFloat(e.target.value);
-                            if (!isNaN(val)) setSheetMargin(convertActiveUnitToMm(val));
-                          }}
-                        />
-                      </div>
-                    ) : (
-                      <div className="input-group">
-                        <label className="input-label">Gluing Overlap ({getUnitSymbol()})</label>
-                        <input
-                          type="number"
-                          step="any"
-                          className="input-field"
-                          value={Number(convertMmToActiveUnit(gluingMargin).toFixed(2))}
-                          onChange={(e) => {
-                            const val = parseFloat(e.target.value);
-                            if (!isNaN(val)) setGluingMargin(convertActiveUnitToMm(val));
-                          }}
-                        />
-                      </div>
-                    )}
+                  <div className="input-group" style={{ marginTop: "8px" }}>
+                    <label className="input-label">Print Margin ({getUnitSymbol()})</label>
+                    <input
+                      type="number"
+                      step="any"
+                      className="input-field"
+                      value={Number(convertMmToActiveUnit(sheetMargin).toFixed(2))}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val)) setSheetMargin(convertActiveUnitToMm(val));
+                      }}
+                    />
                   </div>
 
-                  {/* Fixed paper grid columns / rows inputs for Maximise Mode */}
-                  {layoutMode === "maximise" && (
-                    <div className="settings-grid">
-                      <div className="input-group">
-                        <label className="input-label">Max Columns (X)</label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="10"
-                          className="input-field"
-                          value={maxCols}
-                          onChange={(e) => {
-                            const val = parseInt(e.target.value);
-                            if (!isNaN(val) && val > 0) setMaxCols(val);
-                          }}
-                        />
-                      </div>
-                      <div className="input-group">
-                        <label className="input-label">Max Rows (Y)</label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="10"
-                          className="input-field"
-                          value={maxRows}
-                          onChange={(e) => {
-                            const val = parseInt(e.target.value);
-                            if (!isNaN(val) && val > 0) setMaxRows(val);
-                          }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Printable/gluing guides toggle */}
-                  {layoutMode !== "flow" && (
-                    <label className="checkbox-container" style={{ marginTop: "4px" }}>
-                      <input
-                        type="checkbox"
-                        className="visually-hidden"
-                        checked={showOverlapGuides}
-                        onChange={(e) => setShowOverlapGuides(e.target.checked)}
-                      />
-                      <div className="checkbox-custom">
-                        {showOverlapGuides && <Check size={10} strokeWidth={3} />}
-                      </div>
-                      <span>Show gluing guides & rotated labels</span>
-                    </label>
-                  )}
-
-                  {/* Print safe margin input for Tiled / Maximise modes */}
-                  {layoutMode !== "flow" && (
-                    <div className="input-group">
-                      <label className="input-label">Print Margin ({getUnitSymbol()})</label>
-                      <input
-                        type="number"
-                        step="any"
-                        className="input-field"
-                        value={Number(convertMmToActiveUnit(sheetMargin).toFixed(2))}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          if (!isNaN(val)) setSheetMargin(convertActiveUnitToMm(val));
-                        }}
-                      />
-                    </div>
-                  )}
-
-                  {/* Gluing sheet count warning */}
-                  {layoutMode !== "flow" && pagesCount > 1 && (
-                    <div className="badge-warning">
+                  {pagesCount > 1 && (
+                    <div className="badge-warning" style={{ marginTop: "12px" }}>
                       <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                         <AlertCircle size={14} style={{ color: "var(--accent-color)" }} />
-                        <span className="badge-warning-title">Tiled Grid Layout</span>
+                        <span className="badge-warning-title">Tiled Poster Grid</span>
                       </div>
                       <span className="badge-warning-desc">
-                        Poster grid spans <strong>{pagesCount}</strong> ({cols} × {rows}) sheets. Gluing margins and borders are colored on screen.
+                        Poster grid spans <strong>{pagesCount}</strong> ({cols} × {rows}) sheets. Physical bounds are shown as dotted lines.
                       </span>
                     </div>
                   )}
@@ -2856,41 +2399,27 @@ export default function PlanarApp() {
                     Hold <strong>Space + drag</strong> or use trackpad to pan around the workspace. Pinch trackpad or hold <strong>Ctrl + scroll wheel</strong> to zoom. Double-click image to crop.
                   </p>
 
-                  {layoutMode === "maximise" ? (
+                    <label className="checkbox-container">
+                      <input
+                        type="checkbox"
+                        className="visually-hidden"
+                        checked={allowRotation}
+                        onChange={(e) => setAllowRotation(e.target.checked)}
+                      />
+                      <div className="checkbox-custom">
+                        {allowRotation && <Check size={10} strokeWidth={3} />}
+                      </div>
+                      <span>Allow 90° image rotation to conserve space</span>
+                    </label>
+
                     <button 
                       className="btn btn-secondary" 
-                      onClick={maximiseImagesToPaperGrid}
+                      onClick={() => setImages((prev) => distributeImagesList(prev))}
                       disabled={images.length === 0}
-                      style={{ borderColor: "var(--accent-color)" }}
                     >
-                      <Maximize2 size={14} />
-                      Scale to Maximise ({maxCols}x{maxRows} Grid)
+                      <Grid size={14} />
+                      Distribute (Auto arrange)
                     </button>
-                  ) : (
-                    <>
-                      <label className="checkbox-container">
-                        <input
-                          type="checkbox"
-                          className="visually-hidden"
-                          checked={allowRotation}
-                          onChange={(e) => setAllowRotation(e.target.checked)}
-                        />
-                        <div className="checkbox-custom">
-                          {allowRotation && <Check size={10} strokeWidth={3} />}
-                        </div>
-                        <span>Allow 90° image rotation to conserve space</span>
-                      </label>
-
-                      <button 
-                        className="btn btn-secondary" 
-                        onClick={() => setImages((prev) => distributeImagesList(prev))}
-                        disabled={images.length === 0}
-                      >
-                        <Grid size={14} />
-                        Distribute (Auto arrange)
-                      </button>
-                    </>
-                  )}
                 </div>
               </div>
 
