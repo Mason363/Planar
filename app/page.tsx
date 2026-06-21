@@ -157,6 +157,10 @@ export default function PlanarApp() {
   // Margin / seam guide lines toggle (default on)
   const [showSeamGuides, setShowSeamGuides] = useState<boolean>(true);
 
+  // Gluing method: butt-join (trim margins, zero loss) vs overlap (sheets
+  // overlap by the margin and are glued in the overlap strip). Default off.
+  const [overlapGluing, setOverlapGluing] = useState<boolean>(false);
+
   // Gluing assembly preview (shown after exporting a multi-page PDF)
   const [showGluePreview, setShowGluePreview] = useState<boolean>(false);
   const [gluePreviews, setGluePreviews] = useState<string[]>([]);
@@ -1697,19 +1701,31 @@ export default function PlanarApp() {
     const pageLeft = col * usableWidth;
     const pageTop = row * usableHeight;
 
-    // Clip everything to the printable (margin-inset) area so NOTHING is drawn
-    // in the margins. Each page therefore carries exactly its slice of the
-    // poster; butt-join the trimmed usable areas and the image is continuous
-    // with zero pixels lost.
+    // Butt-join mode: clip everything to the printable (margin-inset) area so
+    // NOTHING is drawn in the margins — trim the margins, join the usable
+    // areas, zero pixels lost.
+    // Overlap mode: NO clip — content bleeds across the full sheet, and
+    // adjacent sheets share a 2×margin overlap strip (printed identically on
+    // both) that you overlay and glue.
     ctx.save();
-    ctx.beginPath();
-    ctx.rect(
-      sheetMargin * renderScale,
-      sheetMargin * renderScale,
-      usableWidth * renderScale,
-      usableHeight * renderScale
-    );
-    ctx.clip();
+    if (!overlapGluing) {
+      ctx.beginPath();
+      ctx.rect(
+        sheetMargin * renderScale,
+        sheetMargin * renderScale,
+        usableWidth * renderScale,
+        usableHeight * renderScale
+      );
+      ctx.clip();
+    }
+
+    // The content window this sheet covers. In overlap mode it extends a full
+    // margin beyond the usable area on every side (the shared glue strip).
+    const bleed = overlapGluing ? sheetMargin : 0;
+    const winLeft = pageLeft - bleed;
+    const winTop = pageTop - bleed;
+    const winW = usableWidth + 2 * bleed;
+    const winH = usableHeight + 2 * bleed;
 
     for (const img of images) {
       const { w: visibleW, h: visibleH } = getImageVisibleSize(img);
@@ -1717,11 +1733,11 @@ export default function PlanarApp() {
       const imgLeft = img.x;
       const imgTop = img.y;
 
-      const intersects = 
-        imgLeft < pageLeft + usableWidth &&
-        imgLeft + layoutW > pageLeft &&
-        imgTop < pageTop + usableHeight &&
-        imgTop + layoutH > pageTop;
+      const intersects =
+        imgLeft < winLeft + winW &&
+        imgLeft + layoutW > winLeft &&
+        imgTop < winTop + winH &&
+        imgTop + layoutH > winTop;
 
       if (!intersects) continue;
 
@@ -1803,9 +1819,10 @@ export default function PlanarApp() {
     ctx.restore();
 
     // --- Gluing seam guides ---------------------------------------------
-    // Draw a gray dotted line along the margin boundary ONLY on sides that abut
-    // another sheet (an internal seam — cut here, then glue/tape the trimmed
-    // edges together). The outermost edges of the whole poster get no line.
+    // A line along the margin boundary ONLY on sides that abut another sheet.
+    // Butt-join: a dashed line where you trim the margin off. Overlap: the same
+    // line, drawn very thin, marks where the margin/overlap strip begins (lay
+    // the neighbouring sheet's edge up to here and glue). Outer edges get none.
     if (showSeamGuides && (cols > 1 || rows > 1)) {
       const m = sheetMargin * renderScale;
       const W = canvas.width;
@@ -1813,8 +1830,13 @@ export default function PlanarApp() {
 
       ctx.save();
       ctx.strokeStyle = "rgba(120, 120, 120, 0.85)";
-      ctx.lineWidth = Math.max(1, renderScale * 0.25);
-      ctx.setLineDash([renderScale * 1.6, renderScale * 1.4]);
+      if (overlapGluing) {
+        ctx.lineWidth = Math.max(0.5, renderScale * 0.06); // very thin
+        ctx.setLineDash([]); // solid hairline
+      } else {
+        ctx.lineWidth = Math.max(1, renderScale * 0.25);
+        ctx.setLineDash([renderScale * 1.6, renderScale * 1.4]);
+      }
 
       ctx.beginPath();
       if (col > 0) {           // glue seam on the left
@@ -2958,8 +2980,8 @@ export default function PlanarApp() {
                 <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                   <div className="input-group">
                     <label className="input-label">Export Format</label>
-                    <select 
-                      className="select-field" 
+                    <select
+                      className="select-field"
                       value={exportFormat}
                       onChange={(e) => setExportFormat(e.target.value as "pdf" | "png" | "jpg")}
                     >
@@ -2968,6 +2990,19 @@ export default function PlanarApp() {
                       <option value="jpg">JPEG Images (.jpg / .zip)</option>
                     </select>
                   </div>
+
+                  <label className="checkbox-container">
+                    <input
+                      type="checkbox"
+                      className="visually-hidden"
+                      checked={overlapGluing}
+                      onChange={(e) => setOverlapGluing(e.target.checked)}
+                    />
+                    <div className="checkbox-custom">
+                      {overlapGluing && <Check size={10} strokeWidth={3} />}
+                    </div>
+                    <span>Overlap gluing (sheets overlap & glue instead of trim &amp; join)</span>
+                  </label>
 
                   <button
                     className="btn btn-primary"
@@ -3045,9 +3080,19 @@ export default function PlanarApp() {
               <div>
                 <h2 className="glue-modal-title">Assembly Guide</h2>
                 <p className="glue-modal-subtitle">
-                  Print all {pagesCount} sheets, then lay them out in this {cols} × {rows} grid.
-                  Trim along the <strong>gray dashed seams</strong> and join the trimmed edges; the
-                  plain outer edges are the finished border of your poster.
+                  Print all {pagesCount} sheets, then lay them out in this {cols} × {rows} grid.{" "}
+                  {overlapGluing ? (
+                    <>
+                      <strong>Overlap</strong> each sheet onto its neighbour up to the thin seam line
+                      (the shared strip is printed on both) and glue there. The plain outer edges are
+                      the finished border.
+                    </>
+                  ) : (
+                    <>
+                      Trim along the <strong>gray dashed seams</strong> and join the trimmed edges;
+                      the plain outer edges are the finished border of your poster.
+                    </>
+                  )}
                 </p>
               </div>
               <button className="glue-close" onClick={() => setShowGluePreview(false)} title="Close">
@@ -3090,7 +3135,7 @@ export default function PlanarApp() {
 
             <div className="glue-legend">
               <span className="glue-legend-item">
-                <span className="glue-swatch dashed" /> Cut &amp; join seam
+                <span className="glue-swatch dashed" /> {overlapGluing ? "Overlap & glue seam" : "Cut & join seam"}
               </span>
               <span className="glue-legend-item">
                 <span className="glue-swatch solid" /> Outer edge (finished border)

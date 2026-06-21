@@ -32,3 +32,15 @@ next-env.d.ts
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Editor / agent tooling
+.claude/
+.vscode/
+.idea/
+
+# Non-essential source assets — the files the app actually serves live in
+# /public (e.g. /public/examples, /public/favicon-*.png).
+/Examples/
+/Favicon White.png
+/Favicon.png
+/Person.svg
