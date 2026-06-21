@@ -21,7 +21,8 @@ import {
   Layers,
   Sparkles,
   Maximize2,
-  Coffee
+  Coffee,
+  User
 } from "lucide-react";
 
 // Types
@@ -116,6 +117,10 @@ const cmToMm = (cm: number) => cm * 10;
 // Rendering display scaling factor (1mm = 2.5px in CSS workspace)
 const PX_PER_MM = 2.5;
 
+// Human scale reference figure dimensions (in mm)
+const PERSON_W = 618;
+const PERSON_H = 1800;
+
 const defaultCrop = (): ImageCrop => ({
   left: 0,
   right: 0,
@@ -139,10 +144,16 @@ export default function PlanarApp() {
   const [paperPreset, setPaperPreset] = useState<string>("A4");
   const [paperWidth, setPaperWidth] = useState<number>(210); // in mm
   const [paperHeight, setPaperHeight] = useState<number>(297); // in mm
-  const [sheetMargin, setSheetMargin] = useState<number>(50.8); // in mm (2 inches default)
+  const [sheetMargin, setSheetMargin] = useState<number>(5); // in mm (5mm default)
   const gluingMargin = 0; // margins act as overlap directly in dynamic grid tiling
   const [allowRotation, setAllowRotation] = useState<boolean>(false);
   const [showOverlapGuides, setShowOverlapGuides] = useState<boolean>(true);
+
+  // Human scale reference toggle (shown alongside multi-page layouts)
+  const [showPerson, setShowPerson] = useState<boolean>(true);
+
+  // Gluing assembly preview (shown after exporting a multi-page PDF)
+  const [showGluePreview, setShowGluePreview] = useState<boolean>(false);
 
   // Workspace states
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -683,6 +694,45 @@ export default function PlanarApp() {
     };
   }, []);
 
+  // Paste-to-import: paste an image from the clipboard (a copied image file or
+  // a screenshot) anywhere on the page and it is imported as a new image.
+  useEffect(() => {
+    const handlePaste = async (e: ClipboardEvent) => {
+      const tag = document.activeElement?.tagName.toLowerCase();
+      if (tag === "input" || tag === "select" || tag === "textarea") return;
+      if (!e.clipboardData) return;
+
+      // 1) Direct image files / bitmaps on the clipboard.
+      const imageFiles = Array.from(e.clipboardData.files).filter((f) =>
+        isSupportedImageFile(f)
+      );
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        const list = imageFiles as unknown as FileList;
+        loadImagesFromFiles(list);
+        return;
+      }
+
+      // 2) A pasted URL / text that points at an image.
+      const text = e.clipboardData.getData("text/plain").trim();
+      if (text && /^https?:\/\/\S+\.(jpe?g|png|gif|webp|avif|bmp|svg|heic|heif|tiff?)(\?\S*)?$/i.test(text)) {
+        e.preventDefault();
+        try {
+          const res = await fetch(text);
+          const blob = await res.blob();
+          const dataUrl = await blobToDataUrl(blob);
+          addImageFromDataUrl(dataUrl, text.split("/").pop() || "pasted-image", blob.type || "image/png");
+        } catch (err) {
+          console.error("Failed to import pasted image URL:", err);
+        }
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Hydration fix & Initial Theme
   useEffect(() => {
     setMounted(true);
@@ -784,64 +834,157 @@ export default function PlanarApp() {
     };
   };
 
+  // Decode any image file (including HEIC/HEIF/TIFF which browsers cannot
+  // render natively) into a PNG/JPEG data URL that an <img> can load.
+  const decodeImageFile = async (file: File): Promise<string> => {
+    const name = file.name.toLowerCase();
+    const type = file.type.toLowerCase();
+
+    const isHeic =
+      type === "image/heic" ||
+      type === "image/heif" ||
+      name.endsWith(".heic") ||
+      name.endsWith(".heif");
+
+    const isTiff =
+      type === "image/tiff" ||
+      type === "image/tif" ||
+      name.endsWith(".tif") ||
+      name.endsWith(".tiff");
+
+    if (isHeic) {
+      const heic2any = (await import("heic2any")).default as (opts: {
+        blob: Blob;
+        toType?: string;
+        quality?: number;
+      }) => Promise<Blob | Blob[]>;
+      const converted = await heic2any({ blob: file, toType: "image/png" });
+      const blob = Array.isArray(converted) ? converted[0] : converted;
+      return await blobToDataUrl(blob);
+    }
+
+    if (isTiff) {
+      const UTIF = (await import("utif2")).default as any;
+      const buffer = await file.arrayBuffer();
+      const ifds = UTIF.decode(buffer);
+      UTIF.decodeImage(buffer, ifds[0]);
+      const rgba = UTIF.toRGBA8(ifds[0]);
+      const canvas = document.createElement("canvas");
+      canvas.width = ifds[0].width;
+      canvas.height = ifds[0].height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas unavailable for TIFF decode");
+      const imageData = ctx.createImageData(canvas.width, canvas.height);
+      imageData.data.set(rgba);
+      ctx.putImageData(imageData, 0, 0);
+      return canvas.toDataURL("image/png");
+    }
+
+    // Everything else: JPEG, PNG, WebP, AVIF, GIF, BMP, SVG, etc. — the
+    // browser handles these natively via a plain data URL.
+    return await blobToDataUrl(file);
+  };
+
+  const blobToDataUrl = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target?.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+  // Heuristic: does this file look like an image we can handle? We accept the
+  // standard MIME prefix, but also fall back to extension sniffing because
+  // many systems report an empty or generic type for HEIC/AVIF/TIFF.
+  const isSupportedImageFile = (file: File): boolean => {
+    if (file.type.startsWith("image/")) return true;
+    const name = file.name.toLowerCase();
+    return /\.(jpe?g|png|gif|webp|avif|bmp|svg|heic|heif|tiff?|ico)$/.test(name);
+  };
+
   // File loading
   const loadImagesFromFiles = (files: FileList) => {
-    Array.from(files).forEach((file) => {
-      if (!file.type.startsWith("image/")) return;
+    Array.from(files).forEach(async (file) => {
+      if (!isSupportedImageFile(file)) return;
 
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const dataUrl = e.target?.result as string;
-        const img = new Image();
-        img.onload = () => {
-          const pxToMm = 0.3528;
-          let initialW = img.naturalWidth * pxToMm;
-          let initialH = img.naturalHeight * pxToMm;
+      let dataUrl: string;
+      try {
+        dataUrl = await decodeImageFile(file);
+      } catch (err) {
+        console.error("Failed to decode image:", file.name, err);
+        alert(`Could not read image "${file.name}". The format may be unsupported by this browser.`);
+        return;
+      }
 
-          const pWidth = paperWidthRef.current;
-          const pHeight = paperHeightRef.current;
-          const sMargin = sheetMarginRef.current;
-
-          const maxWidth = pWidth - 2 * sMargin;
-          const maxHeight = pHeight - 2 * sMargin;
-          if (initialW > maxWidth || initialH > maxHeight) {
-            const ratio = Math.min(maxWidth / initialW, maxHeight / initialH);
-            initialW *= ratio;
-            initialH *= ratio;
-          }
-
-          const newImg: ImageItem = {
-            id: Math.random().toString(36).substring(2, 9),
-            name: file.name,
-            originalSrc: dataUrl,
-            src: dataUrl,
-            width: img.naturalWidth,
-            height: img.naturalHeight,
-            targetWidth: initialW,
-            targetHeight: initialH,
-            crop: defaultCrop(),
-            useImageBounds: false,
-            bounds: null,
-            x: sMargin + Math.random() * 10,
-            y: sMargin + Math.random() * 10,
-            rotation: 0,
-            mimeType: file.type,
-            backgroundRemoved: false,
-          };
-
-          if (file.type === "image/png") {
-            getImageBounds(img).then((bounds) => {
-              newImg.bounds = bounds;
-              setImages((prev) => distributeImagesList([...prev, newImg]));
-            });
-          } else {
-            setImages((prev) => distributeImagesList([...prev, newImg]));
-          }
-        };
-        img.src = dataUrl;
-      };
-      reader.readAsDataURL(file);
+      addImageFromDataUrl(dataUrl, file.name, file.type);
     });
+  };
+
+  // Shared image-creation routine used by file uploads, clipboard paste, and
+  // the built-in example gallery. Scales the image to fit inside the printable
+  // (margin-inset) area and packs it into the layout.
+  const addImageFromDataUrl = (dataUrl: string, name: string, type: string) => {
+    const img = new Image();
+    img.onload = () => {
+      const pxToMm = 0.3528;
+      let initialW = img.naturalWidth * pxToMm;
+      let initialH = img.naturalHeight * pxToMm;
+
+      const pWidth = paperWidthRef.current;
+      const pHeight = paperHeightRef.current;
+      const sMargin = sheetMarginRef.current;
+
+      const maxWidth = pWidth - 2 * sMargin;
+      const maxHeight = pHeight - 2 * sMargin;
+      if (initialW > maxWidth || initialH > maxHeight) {
+        const ratio = Math.min(maxWidth / initialW, maxHeight / initialH);
+        initialW *= ratio;
+        initialH *= ratio;
+      }
+
+      const newImg: ImageItem = {
+        id: Math.random().toString(36).substring(2, 9),
+        name,
+        originalSrc: dataUrl,
+        src: dataUrl,
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+        targetWidth: initialW,
+        targetHeight: initialH,
+        crop: defaultCrop(),
+        useImageBounds: false,
+        bounds: null,
+        // New images are placed at the usable-area origin; packing keeps
+        // everything inside the margins.
+        x: 0,
+        y: 0,
+        rotation: 0,
+        mimeType: type,
+        backgroundRemoved: false,
+      };
+
+      if (type === "image/png") {
+        getImageBounds(img).then((bounds) => {
+          newImg.bounds = bounds;
+          setImages((prev) => distributeImagesList([...prev, newImg]));
+        });
+      } else {
+        setImages((prev) => distributeImagesList([...prev, newImg]));
+      }
+    };
+    img.src = dataUrl;
+  };
+
+  // Load one of the bundled example images (served from /public/examples).
+  const loadExampleImage = async (fileName: string) => {
+    try {
+      const res = await fetch(`/examples/${encodeURIComponent(fileName)}`);
+      const blob = await res.blob();
+      const dataUrl = await blobToDataUrl(blob);
+      addImageFromDataUrl(dataUrl, fileName, blob.type || "image/jpeg");
+    } catch (err) {
+      console.error("Failed to load example image:", fileName, err);
+    }
   };
 
   // Bounding box calculation for PNG transparent borders
@@ -1173,6 +1316,41 @@ export default function PlanarApp() {
 
   const { totalWidth, totalHeight, cols, rows, pagesCount, usableWidth, usableHeight } = getLayoutDimensions();
 
+  // The human scale figure is only meaningful for multi-sheet (tiled poster)
+  // layouts, and can be toggled off. `personOffset` is the horizontal space it
+  // reserves to the left of the sheets (figure width + a 20mm gap).
+  const personVisible = pagesCount > 1 && showPerson;
+  const personOffset = personVisible ? PERSON_W + 20 : 0;
+
+  // When the human figure appears or disappears, glide the camera to reframe
+  // both the person and the sheets — quickly, along a curve, never a jump.
+  useEffect(() => {
+    if (!mounted) return;
+    const id = requestAnimationFrame(() => fitToViewport());
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personVisible]);
+
+  // Auto-fit on first mount and whenever the viewport resizes (rotating a
+  // phone, resizing the window) so the sheet always fits the workspace panel —
+  // essential for the mobile layout where the canvas lives in a short top pane.
+  useEffect(() => {
+    if (!mounted) return;
+    const id = requestAnimationFrame(() => fitToViewport());
+    let resizeTimer: ReturnType<typeof setTimeout>;
+    const onResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => fitToViewport(), 120);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(id);
+      clearTimeout(resizeTimer);
+      window.removeEventListener("resize", onResize);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
+
   // Fit the canvas pasteboard to the available viewport space
   const fitToViewport = () => {
     const container = workspaceRef.current;
@@ -1182,23 +1360,72 @@ export default function PlanarApp() {
     const containerH = container.clientHeight;
 
     if (containerW > 0 && containerH > 0) {
-      // Include sheets grid width plus human width (618) plus gap (20) plus horizontal margins (80)
-      const neededW = (totalWidth + 618 + 20 + 80) * PX_PER_MM;
-      // Include sheets grid height plus vertical margins (80)
+      // Horizontal framing accounts for both the sheets AND the human figure
+      // width so the person and the paper both fit in view. Vertical framing
+      // deliberately considers ONLY the paper height (not the figure height) —
+      // the person may extend above/below the view, but the paper is always
+      // fully framed and never pushed off-centre by the tall figure.
+      const neededW = (totalWidth + personOffset + 80) * PX_PER_MM;
       const neededH = (totalHeight + 80) * PX_PER_MM;
       const zoomW = containerW / neededW;
       const zoomH = containerH / neededH;
       // Fit to screen with a 8% safety margin
       const nextZoom = Math.max(0.12, Math.min(3.0, Math.min(zoomW, zoomH) * 0.92));
-      
-      setZoom(nextZoom);
 
-      // Center the scroll position
-      pendingScrollRef.current = {
+      const targetScroll = {
         left: (neededW * nextZoom - containerW) / 2,
         top: (neededH * nextZoom - containerH) / 2,
       };
+
+      animateCamera(nextZoom, targetScroll);
     }
+  };
+
+  // Smoothly ease the camera (zoom + scroll) to a target instead of snapping.
+  // Used by "Fit" and whenever the framing changes (e.g. the person appears),
+  // so the view glides into place along a curve rather than jumping.
+  const cameraAnimRef = useRef<number | null>(null);
+  const animateCamera = (targetZoom: number, targetScroll: { left: number; top: number }) => {
+    const container = workspaceRef.current;
+    if (!container) return;
+
+    if (cameraAnimRef.current !== null) {
+      cancelAnimationFrame(cameraAnimRef.current);
+      cameraAnimRef.current = null;
+    }
+
+    const startZoom = zoomRef.current;
+    const startLeft = container.scrollLeft;
+    const startTop = container.scrollTop;
+    const duration = 320; // ms
+    const startTime = performance.now();
+    // easeOutCubic — fast departure, gentle settle
+    const ease = (t: number) => 1 - Math.pow(1 - t, 3);
+
+    const step = (now: number) => {
+      const t = Math.min(1, (now - startTime) / duration);
+      const k = ease(t);
+
+      const z = startZoom + (targetZoom - startZoom) * k;
+      setZoom(z);
+
+      // Glide the scroll offset along with the eased zoom. Both endpoints are
+      // valid positions at their own zoom levels; the eased blend reads as one
+      // continuous curved camera move.
+      const left = startLeft + (targetScroll.left - startLeft) * k;
+      const top = startTop + (targetScroll.top - startTop) * k;
+      pendingScrollRef.current = { left, top };
+      container.scrollLeft = left;
+      container.scrollTop = top;
+
+      if (t < 1) {
+        cameraAnimRef.current = requestAnimationFrame(step);
+      } else {
+        cameraAnimRef.current = null;
+      }
+    };
+
+    cameraAnimRef.current = requestAnimationFrame(step);
   };
 
   // Distribute packing algorithm
@@ -1329,6 +1556,12 @@ export default function PlanarApp() {
         link.click();
       }
     }
+
+    // For multi-sheet posters, surface an assembly guide showing how the pages
+    // tile together and which seams to glue.
+    if (numPages > 1) {
+      setShowGluePreview(true);
+    }
   };
 
   const generatePageCanvas = async (pageIndex: number): Promise<HTMLCanvasElement> => {
@@ -1342,7 +1575,7 @@ export default function PlanarApp() {
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    const { cols, usableWidth, usableHeight } = getLayoutDimensions();
+    const { cols, rows, usableWidth, usableHeight } = getLayoutDimensions();
     const col = pageIndex % cols;
     const row = Math.floor(pageIndex / cols);
 
@@ -1433,6 +1666,42 @@ export default function PlanarApp() {
         img.targetHeight * renderScale
       );
 
+      ctx.restore();
+    }
+
+    // --- Gluing seam guides ---------------------------------------------
+    // Draw a gray dotted line along the margin boundary ONLY on sides that abut
+    // another sheet (an internal seam where the user overlaps and glues). The
+    // outermost edges of the whole poster get no line, because nothing is glued
+    // there. The margin strip itself is the overlap/glue allowance.
+    if (cols > 1 || rows > 1) {
+      const m = sheetMargin * renderScale;
+      const W = canvas.width;
+      const H = canvas.height;
+
+      ctx.save();
+      ctx.strokeStyle = "rgba(120, 120, 120, 0.85)";
+      ctx.lineWidth = Math.max(1, renderScale * 0.25);
+      ctx.setLineDash([renderScale * 1.6, renderScale * 1.4]);
+
+      ctx.beginPath();
+      if (col > 0) {           // glue seam on the left
+        ctx.moveTo(m, 0);
+        ctx.lineTo(m, H);
+      }
+      if (col < cols - 1) {    // glue seam on the right
+        ctx.moveTo(W - m, 0);
+        ctx.lineTo(W - m, H);
+      }
+      if (row > 0) {           // glue seam on the top
+        ctx.moveTo(0, m);
+        ctx.lineTo(W, m);
+      }
+      if (row < rows - 1) {    // glue seam on the bottom
+        ctx.moveTo(0, H - m);
+        ctx.lineTo(W, H - m);
+      }
+      ctx.stroke();
       ctx.restore();
     }
 
@@ -1624,6 +1893,15 @@ export default function PlanarApp() {
             <button className="zoom-btn" onClick={handleZoomIn} title="Zoom In"><Plus size={14} /></button>
             <button className="zoom-btn" onClick={handleZoomOut} title="Zoom Out"><Minus size={14} /></button>
             <button className="zoom-btn" style={{ fontSize: "11px", fontWeight: "500" }} onClick={handleZoomReset} title="Reset Zoom">FIT</button>
+            <button
+              className={`zoom-btn ${showPerson ? "active" : ""}`}
+              onClick={() => setShowPerson((v) => !v)}
+              title={showPerson ? "Hide human scale reference" : "Show human scale reference"}
+              disabled={pagesCount <= 1}
+              style={{ opacity: pagesCount <= 1 ? 0.35 : 1 }}
+            >
+              <User size={14} />
+            </button>
           </div>
 
           <div 
@@ -1645,7 +1923,7 @@ export default function PlanarApp() {
             <div
             className="workspace-scroll-wrapper"
             style={{
-              width: `${(totalWidth + 618 + 20 + 80) * PX_PER_MM * zoom}px`,
+              width: `${(totalWidth + personOffset + 80) * PX_PER_MM * zoom}px`,
               height: `${(totalHeight + 80) * PX_PER_MM * zoom}px`,
               position: "relative",
             }}
@@ -1653,7 +1931,7 @@ export default function PlanarApp() {
             <div
               style={{
                 position: "absolute",
-                left: `${(40 + 618 + 20) * PX_PER_MM * zoom}px`,
+                left: `${(40 + personOffset) * PX_PER_MM * zoom}px`,
                 top: `${40 * PX_PER_MM * zoom}px`,
                 width: `${totalWidth * PX_PER_MM * zoom}px`,
                 height: `${totalHeight * PX_PER_MM * zoom}px`,
@@ -1674,36 +1952,40 @@ export default function PlanarApp() {
                 width: `${totalWidth * PX_PER_MM}px`,
                 height: `${totalHeight * PX_PER_MM}px`,
                 position: "absolute",
-                left: `${(40 + 618 + 20) * PX_PER_MM * zoom}px`,
+                left: `${(40 + personOffset) * PX_PER_MM * zoom}px`,
                 top: `${40 * PX_PER_MM * zoom}px`,
               }}
             >
-              {/* Human Scale Figure (180cm tall) */}
-              <div
-                style={{
-                  position: "absolute",
-                  left: `${-(618 + 20) * PX_PER_MM}px`,
-                  top: 0,
-                  width: `${618 * PX_PER_MM}px`,
-                  height: `${totalHeight * PX_PER_MM}px`,
-                  overflow: "hidden",
-                  pointerEvents: "none",
-                  zIndex: 2,
-                }}
-              >
-                <svg
-                  viewBox="0 0 83.5 243.2"
+              {/* Human Scale Figure (180cm tall). Rendered in full — its feet
+                  align with the bottom of the sheet grid and it is never
+                  clipped, so the whole person is always visible. */}
+              {personVisible && (
+                <div
                   style={{
-                    width: `${618 * PX_PER_MM}px`,
-                    height: `${1800 * PX_PER_MM}px`,
-                    fill: "currentColor",
-                    color: "var(--text-muted)",
-                    opacity: 0.25,
+                    position: "absolute",
+                    left: `${-(PERSON_W + 20) * PX_PER_MM}px`,
+                    top: `${(totalHeight - PERSON_H) * PX_PER_MM}px`,
+                    width: `${PERSON_W * PX_PER_MM}px`,
+                    height: `${PERSON_H * PX_PER_MM}px`,
+                    overflow: "visible",
+                    pointerEvents: "none",
+                    zIndex: 2,
                   }}
                 >
-                  <path d="M 22.574217,241.67349 C 22.224017,241.10685 22.223387,239.11924 22.572827,237.25659 C 23.034967,234.79314 22.608087,232.69372 21.006867,229.55505 C 18.887427,225.40062 18.832317,224.56245 19.524847,207.01596 C 20.239397,188.91152 20.229657,188.78403 18.043027,187.61378 L 15.841927,186.43579 L 16.048517,154.7725 C 16.162127,137.35769 16.205457,121.92805 16.144797,120.48441 C 16.075497,118.83546 14.369517,116.12188 11.556117,113.18556 C 9.0930169,110.61484 5.4394869,105.58204 3.4371669,102.00156 C 0.10170688,96.037191 -0.15588312,95.014611 0.36373685,89.800401 C 0.67567685,86.670247 1.1825869,80.509211 1.4902169,76.109211 C 2.0224969,68.496046 5.6058969,48.704473 6.6391069,47.671261 C 6.9071369,47.403233 9.0182469,46.464702 11.330467,45.585636 C 16.710457,43.540254 30.030647,34.782798 30.796227,32.78773 C 31.117927,31.949394 30.650567,29.203771 29.757647,26.686347 C 26.372107,17.141468 26.488367,14.689315 30.623477,8.4248053 C 34.801117,2.0958521 36.433417,1.3422121 44.111797,2.1972011 C 51.491627,3.0189471 53.880067,4.1457301 54.637287,7.1627611 C 55.495907,10.583749 54.449997,20.593711 53.092047,21.95166 C 52.510387,22.533313 52.036177,25.281711 52.038227,28.059211 C 52.042897,34.358752 54.919477,39.609211 58.366157,39.609211 C 61.690027,39.609211 65.887247,41.904241 70.450297,46.216781 C 74.246387,49.804474 74.387967,50.180384 75.081547,58.51341 C 76.064627,70.32466 79.106487,80.574379 82.259277,82.699188 C 83.460607,83.508822 83.416547,86.067563 82.080007,93.109211 C 81.453647,96.409211 80.745487,100.44993 80.506317,102.08858 C 80.267137,103.72723 79.163137,106.29651 78.052977,107.79808 C 76.942807,109.29966 76.034497,111.18464 76.034497,111.98693 C 76.034497,114.79527 74.768337,116.69549 71.913317,118.17188 L 69.034497,119.66057 L 69.034497,132.69334 C 69.034497,139.86136 69.461257,148.7373 69.982847,152.41766 C 70.504437,156.09801 71.139647,164.90508 71.394417,171.98891 C 71.839467,184.36361 71.769137,184.95175 69.600547,186.98891 C 66.671227,189.74072 65.563847,196.93707 65.919507,210.91039 C 66.107287,218.28802 65.808897,222.17611 64.978097,223.17717 C 64.309117,223.98324 63.761767,226.50137 63.761767,228.77302 C 63.761767,232.39393 64.271887,233.32702 67.898127,236.33919 C 74.685837,241.97743 73.860267,242.60921 59.704787,242.60921 L 47.375087,242.60921 L 48.381047,237.05929 C 49.149427,232.82009 49.053977,230.28126 47.976867,226.30929 C 47.048357,222.88524 46.561227,215.74734 46.550617,205.41004 C 46.540157,195.22853 46.143007,189.31909 45.420627,188.59617 C 44.676577,187.85157 43.182527,187.77198 40.920627,188.35647 L 37.534497,189.23146 L 36.746447,202.17033 C 36.256197,210.21982 36.344987,217.35703 36.981437,221.05765 C 37.802917,225.83421 37.723037,227.43561 36.575947,229.18629 C 35.790267,230.38539 35.009517,233.78359 34.840967,236.73784 L 34.534497,242.10921 L 28.872727,242.40648 C 25.730667,242.57145 22.927587,242.24524 22.574217,241.67349 z" />
-                </svg>
-              </div>
+                  <svg
+                    viewBox="0 0 83.5 243.2"
+                    style={{
+                      width: `${PERSON_W * PX_PER_MM}px`,
+                      height: `${PERSON_H * PX_PER_MM}px`,
+                      fill: "currentColor",
+                      color: "var(--text-muted)",
+                      opacity: 0.25,
+                    }}
+                  >
+                    <path d="M 22.574217,241.67349 C 22.224017,241.10685 22.223387,239.11924 22.572827,237.25659 C 23.034967,234.79314 22.608087,232.69372 21.006867,229.55505 C 18.887427,225.40062 18.832317,224.56245 19.524847,207.01596 C 20.239397,188.91152 20.229657,188.78403 18.043027,187.61378 L 15.841927,186.43579 L 16.048517,154.7725 C 16.162127,137.35769 16.205457,121.92805 16.144797,120.48441 C 16.075497,118.83546 14.369517,116.12188 11.556117,113.18556 C 9.0930169,110.61484 5.4394869,105.58204 3.4371669,102.00156 C 0.10170688,96.037191 -0.15588312,95.014611 0.36373685,89.800401 C 0.67567685,86.670247 1.1825869,80.509211 1.4902169,76.109211 C 2.0224969,68.496046 5.6058969,48.704473 6.6391069,47.671261 C 6.9071369,47.403233 9.0182469,46.464702 11.330467,45.585636 C 16.710457,43.540254 30.030647,34.782798 30.796227,32.78773 C 31.117927,31.949394 30.650567,29.203771 29.757647,26.686347 C 26.372107,17.141468 26.488367,14.689315 30.623477,8.4248053 C 34.801117,2.0958521 36.433417,1.3422121 44.111797,2.1972011 C 51.491627,3.0189471 53.880067,4.1457301 54.637287,7.1627611 C 55.495907,10.583749 54.449997,20.593711 53.092047,21.95166 C 52.510387,22.533313 52.036177,25.281711 52.038227,28.059211 C 52.042897,34.358752 54.919477,39.609211 58.366157,39.609211 C 61.690027,39.609211 65.887247,41.904241 70.450297,46.216781 C 74.246387,49.804474 74.387967,50.180384 75.081547,58.51341 C 76.064627,70.32466 79.106487,80.574379 82.259277,82.699188 C 83.460607,83.508822 83.416547,86.067563 82.080007,93.109211 C 81.453647,96.409211 80.745487,100.44993 80.506317,102.08858 C 80.267137,103.72723 79.163137,106.29651 78.052977,107.79808 C 76.942807,109.29966 76.034497,111.18464 76.034497,111.98693 C 76.034497,114.79527 74.768337,116.69549 71.913317,118.17188 L 69.034497,119.66057 L 69.034497,132.69334 C 69.034497,139.86136 69.461257,148.7373 69.982847,152.41766 C 70.504437,156.09801 71.139647,164.90508 71.394417,171.98891 C 71.839467,184.36361 71.769137,184.95175 69.600547,186.98891 C 66.671227,189.74072 65.563847,196.93707 65.919507,210.91039 C 66.107287,218.28802 65.808897,222.17611 64.978097,223.17717 C 64.309117,223.98324 63.761767,226.50137 63.761767,228.77302 C 63.761767,232.39393 64.271887,233.32702 67.898127,236.33919 C 74.685837,241.97743 73.860267,242.60921 59.704787,242.60921 L 47.375087,242.60921 L 48.381047,237.05929 C 49.149427,232.82009 49.053977,230.28126 47.976867,226.30929 C 47.048357,222.88524 46.561227,215.74734 46.550617,205.41004 C 46.540157,195.22853 46.143007,189.31909 45.420627,188.59617 C 44.676577,187.85157 43.182527,187.77198 40.920627,188.35647 L 37.534497,189.23146 L 36.746447,202.17033 C 36.256197,210.21982 36.344987,217.35703 36.981437,221.05765 C 37.802917,225.83421 37.723037,227.43561 36.575947,229.18629 C 35.790267,230.38539 35.009517,233.78359 34.840967,236.73784 L 34.534497,242.10921 L 28.872727,242.40648 C 25.730667,242.57145 22.927587,242.24524 22.574217,241.67349 z" />
+                  </svg>
+                </div>
+              )}
 
               {renderSheets()}
 
@@ -2244,7 +2526,7 @@ export default function PlanarApp() {
             <div className="sidebar-panel">
               
               <div className="step-group">
-                <span className="step-number">01</span>
+                <span className="step-number">1</span>
                 <h3 className="step-title">
                   <Layers size={16} />
                   <span>Choose Paper Size</span>
@@ -2324,27 +2606,43 @@ export default function PlanarApp() {
 
               {/* Step 2: Upload Images */}
               <div className="step-group">
-                <span className="step-number">02</span>
+                <span className="step-number">2</span>
                 <h3 className="step-title">
                   <Upload size={16} />
                   <span>Upload Images</span>
                 </h3>
                 
-                <input 
-                  type="file" 
-                  className="visually-hidden" 
-                  ref={fileInputRef} 
-                  multiple 
-                  accept="image/*"
+                <input
+                  type="file"
+                  className="visually-hidden"
+                  ref={fileInputRef}
+                  multiple
+                  accept="image/*,.heic,.heif,.avif,.tif,.tiff,.webp,.bmp"
                   onChange={(e) => {
                     if (e.target.files) loadImagesFromFiles(e.target.files);
                   }}
                 />
-                
+
                 <div className="upload-zone" onClick={() => fileInputRef.current?.click()}>
                   <Upload size={18} className="upload-icon" />
                   <p style={{ fontWeight: 500, fontSize: "0.82rem" }}>Upload or drag images</p>
-                  <p style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginTop: "2px" }}>PNG, JPG supported</p>
+                  <p style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginTop: "2px" }}>JPG, PNG, WebP, HEIC, AVIF, TIFF & more · paste too</p>
+                </div>
+
+                {/* Built-in example images */}
+                <div className="example-label">Or try an example</div>
+                <div className="example-gallery">
+                  {["Bird.jpg", "Dog.jpg", "Flower.jpg", "Forest.jpg", "Rocky Nature.jpg"].map((ex) => (
+                    <div
+                      key={ex}
+                      className="example-thumb"
+                      title={`Add ${ex.replace(/\.[^.]+$/, "")}`}
+                      onClick={() => loadExampleImage(ex)}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={`/examples/${encodeURIComponent(ex)}`} alt={ex} />
+                    </div>
+                  ))}
                 </div>
 
                 {images.length > 0 ? (
@@ -2388,7 +2686,7 @@ export default function PlanarApp() {
 
               {/* Step 3: Arrange & Pack */}
               <div className="step-group">
-                <span className="step-number">03</span>
+                <span className="step-number">3</span>
                 <h3 className="step-title">
                   <Grid size={16} />
                   <span>Arrange & Pack</span>
@@ -2425,7 +2723,7 @@ export default function PlanarApp() {
 
               {/* Step 4: Export PDF */}
               <div className="step-group" style={{ borderBottom: "none" }}>
-                <span className="step-number">04</span>
+                <span className="step-number">4</span>
                 <h3 className="step-title">
                   <Download size={16} />
                   <span>Export Document</span>
@@ -2445,14 +2743,35 @@ export default function PlanarApp() {
                     </select>
                   </div>
 
-                  <button 
-                    className="btn btn-primary" 
+                  <button
+                    className="btn btn-primary"
                     onClick={triggerExport}
                     disabled={images.length === 0}
                   >
                     <Download size={14} />
                     Export printable {exportFormat.toUpperCase()}
                   </button>
+
+                  <div className="size-summary">
+                    <div className="size-summary-row">
+                      <span className="size-summary-label">Full size (with margins)</span>
+                      <span className="size-summary-value">
+                        {Number(convertMmToActiveUnit(totalWidth).toFixed(1))} × {Number(convertMmToActiveUnit(totalHeight).toFixed(1))} {getUnitSymbol()}
+                      </span>
+                    </div>
+                    <div className="size-summary-row">
+                      <span className="size-summary-label">Printable area (margins removed)</span>
+                      <span className="size-summary-value">
+                        {Number(convertMmToActiveUnit(cols * usableWidth).toFixed(1))} × {Number(convertMmToActiveUnit(rows * usableHeight).toFixed(1))} {getUnitSymbol()}
+                      </span>
+                    </div>
+                    {pagesCount > 1 && (
+                      <div className="size-summary-row">
+                        <span className="size-summary-label">Sheets</span>
+                        <span className="size-summary-value">{pagesCount} ({cols} × {rows})</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -2483,6 +2802,68 @@ export default function PlanarApp() {
           </footer>
         </aside>
       </main>
+
+      {showGluePreview && pagesCount > 1 && (
+        <div className="glue-modal-overlay" onClick={() => setShowGluePreview(false)}>
+          <div className="glue-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="glue-modal-header">
+              <div>
+                <h2 className="glue-modal-title">Assembly Guide</h2>
+                <p className="glue-modal-subtitle">
+                  Print all {pagesCount} sheets, then lay them out in this {cols} × {rows} grid.
+                  Overlap and glue along the <strong>gray dotted seams</strong>; the plain outer
+                  edges are the finished border of your poster.
+                </p>
+              </div>
+              <button className="icon-btn" onClick={() => setShowGluePreview(false)} title="Close">
+                <Plus size={18} style={{ transform: "rotate(45deg)" }} />
+              </button>
+            </div>
+
+            <div
+              className="glue-grid"
+              style={{
+                gridTemplateColumns: `repeat(${cols}, 1fr)`,
+                gridTemplateRows: `repeat(${rows}, 1fr)`,
+                aspectRatio: `${cols * paperWidth} / ${rows * paperHeight}`,
+              }}
+            >
+              {Array.from({ length: rows }).map((_, r) =>
+                Array.from({ length: cols }).map((_, c) => {
+                  const num = r * cols + c + 1;
+                  return (
+                    <div
+                      key={`glue-${c}-${r}`}
+                      className="glue-cell"
+                      style={{
+                        borderLeft: c > 0 ? "2px dashed #888" : "2px solid var(--text-main)",
+                        borderRight: c < cols - 1 ? "2px dashed #888" : "2px solid var(--text-main)",
+                        borderTop: r > 0 ? "2px dashed #888" : "2px solid var(--text-main)",
+                        borderBottom: r < rows - 1 ? "2px dashed #888" : "2px solid var(--text-main)",
+                      }}
+                    >
+                      <span className="glue-cell-num">{num}</span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="glue-legend">
+              <span className="glue-legend-item">
+                <span className="glue-swatch dashed" /> Glue seam (overlap here)
+              </span>
+              <span className="glue-legend-item">
+                <span className="glue-swatch solid" /> Outer edge (do not glue)
+              </span>
+            </div>
+
+            <button className="btn btn-primary" onClick={() => setShowGluePreview(false)}>
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
