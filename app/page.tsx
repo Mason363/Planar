@@ -2073,23 +2073,49 @@ export default function PlanarApp() {
     const H = rows * usableHeight;
     const targetRatio = W / H;
 
-    // Determine if we should rotate 90 degrees
+    const origW = target.width;
+    const origH = target.height;
+
+    // Use current crop if we're not automatically cropping to fill the grid
+    let left = 0;
+    let right = 0;
+    let top = 0;
+    let bottom = 0;
+
+    if (!maximizeCrop) {
+      left = target.crop.left;
+      right = target.crop.right;
+      top = target.crop.top;
+      bottom = target.crop.bottom;
+    }
+
+    const visFracW = 1 - (left + right) / 100;
+    const visFracH = 1 - (top + bottom) / 100;
+
+    // Determine target rotation
+    let newRotation = target.rotation;
     let rotate90 = false;
+
     if (maximizeRotation) {
-      const ratio0 = target.width / target.height;
-      const ratio90 = target.height / target.width;
+      const ratio0 = (origW * visFracW) / (origH * visFracH);
+      const ratio90 = (origH * visFracH) / (origW * visFracW);
       const mismatch0 = Math.max(ratio0 / targetRatio, targetRatio / ratio0);
       const mismatch90 = Math.max(ratio90 / targetRatio, targetRatio / ratio90);
       if (mismatch90 < mismatch0) {
         rotate90 = true;
+        newRotation = 90;
+      } else {
+        rotate90 = false;
+        newRotation = 0;
       }
+    } else {
+      rotate90 = (target.rotation === 90 || target.rotation === 270);
     }
 
-    const origW = target.width;
-    const origH = target.height;
-    const effImgRatio = rotate90 ? (origH / origW) : (origW / origH);
+    const effImgRatio = rotate90
+      ? (origH * visFracH) / (origW * visFracW)
+      : (origW * visFracW) / (origH * visFracH);
 
-    let left = 0, right = 0, top = 0, bottom = 0;
     let newTargetW = 0, newTargetH = 0;
 
     if (maximizeCrop) {
@@ -2101,15 +2127,15 @@ export default function PlanarApp() {
           // Screen horizontal crop -> local top and bottom crop
           top = cut / 2;
           bottom = cut / 2;
-          const visFracH = 1 - (top + bottom) / 100;
-          newTargetH = W / visFracH;
+          const visFracH_new = 1 - (top + bottom) / 100;
+          newTargetH = W / visFracH_new;
           newTargetW = newTargetH * (origW / origH);
         } else {
           // Screen horizontal crop -> local left and right crop
           left = cut / 2;
           right = cut / 2;
-          const visFracW = 1 - (left + right) / 100;
-          newTargetW = W / visFracW;
+          const visFracW_new = 1 - (left + right) / 100;
+          newTargetW = W / visFracW_new;
           newTargetH = newTargetW * (origH / origW);
         }
       } else {
@@ -2119,43 +2145,32 @@ export default function PlanarApp() {
           // Screen vertical crop -> local left and right crop
           left = cut / 2;
           right = cut / 2;
-          const visFracW = 1 - (left + right) / 100;
-          newTargetW = H / visFracW;
+          const visFracW_new = 1 - (left + right) / 100;
+          newTargetW = H / visFracW_new;
           newTargetH = newTargetW * (origH / origW);
         } else {
           // Screen vertical crop -> local top and bottom crop
           top = cut / 2;
           bottom = cut / 2;
-          const visFracH = 1 - (top + bottom) / 100;
-          newTargetH = H / visFracH;
+          const visFracH_new = 1 - (top + bottom) / 100;
+          newTargetH = H / visFracH_new;
           newTargetW = newTargetH * (origW / origH);
         }
       }
     } else {
       // NO CROP (CONTAIN)
-      left = 0;
-      right = 0;
-      top = 0;
-      bottom = 0;
-      if (effImgRatio > targetRatio) {
-        // Width constrained
-        if (rotate90) {
-          newTargetH = W;
-          newTargetW = W * (origW / origH);
-        } else {
-          newTargetW = W;
-          newTargetH = W * (origH / origW);
-        }
-      } else {
-        // Height constrained
-        if (rotate90) {
-          newTargetW = H;
-          newTargetH = H * (origH / origW);
-        } else {
-          newTargetH = H;
-          newTargetW = H * (origW / origH);
-        }
-      }
+      // Fit the layout size (bounding box) of the cropped image within W x H.
+      // This general formulation handles any rotation correctly.
+      const rad = (newRotation * Math.PI) / 180;
+      const cos = Math.abs(Math.cos(rad));
+      const sin = Math.abs(Math.sin(rad));
+
+      const layoutW_unit = origW * visFracW * cos + origH * visFracH * sin;
+      const layoutH_unit = origW * visFracW * sin + origH * visFracH * cos;
+
+      const scale = Math.min(W / layoutW_unit, H / layoutH_unit);
+      newTargetW = scale * origW;
+      newTargetH = scale * origH;
     }
 
     setImages((prev) => {
@@ -2166,7 +2181,7 @@ export default function PlanarApp() {
               crop: { ...im.crop, left, right, top, bottom, ratioPreset: "free", shape: "rectangle" } as ImageCrop,
               targetWidth: newTargetW,
               targetHeight: newTargetH,
-              rotation: rotate90 ? 90 : 0,
+              rotation: newRotation,
               x: 0,
               y: 0,
             }
