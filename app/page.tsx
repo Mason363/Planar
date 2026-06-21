@@ -17,6 +17,7 @@ import {
   Scissors,
   RefreshCw,
   ArrowLeft,
+  ArrowUpRight,
   Crop,
   Layers,
   Sparkles,
@@ -141,6 +142,14 @@ export default function PlanarApp() {
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [mounted, setMounted] = useState(false);
 
+  // Welcome dialog state
+  const [showWelcome, setShowWelcome] = useState<boolean>(false);
+  const [dontShowAgain, setDontShowAgain] = useState<boolean>(true);
+
+  // Manual grid expansion states (minimum grid size)
+  const [manualCols, setManualCols] = useState<number>(1);
+  const [manualRows, setManualRows] = useState<number>(1);
+
   // Unit and layout variables
   const [unit, setUnit] = useState<"mm" | "cm" | "in">("mm");
   const [paperPreset, setPaperPreset] = useState<string>("A4");
@@ -168,6 +177,8 @@ export default function PlanarApp() {
   // Target poster grid for "Maximize images to fit"
   const [posterCols, setPosterCols] = useState<number>(1);
   const [posterRows, setPosterRows] = useState<number>(1);
+  const [maximizeCrop, setMaximizeCrop] = useState<boolean>(false);
+  const [maximizeRotation, setMaximizeRotation] = useState<boolean>(false);
 
   // Workspace states
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -187,6 +198,7 @@ export default function PlanarApp() {
 
   // Crop mode state
   const [croppingImageId, setCroppingImageId] = useState<string | null>(null);
+  const [cropBeforeEdit, setCropBeforeEdit] = useState<ImageCrop | null>(null);
 
   // DOM Refs
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -263,11 +275,18 @@ export default function PlanarApp() {
     };
   }, [selectedImageId]);
 
+  // Clean up calibration/cropping states when selected image changes or is deselected
+  useEffect(() => {
+    setIsCalibrationActive(false);
+    setCroppingImageId(null);
+    setCropBeforeEdit(null);
+    setCalibrationPoints([]);
+    setCalibrationDistance("");
+  }, [selectedImageId]);
+
   const handleWorkspaceMouseDown = (e: React.MouseEvent) => {
-    // Start panning on middle-click, or when space is pressed, OR on left-click on any empty canvas area (not an image wrapper)
-    const isLeftClickOnEmpty = e.button === 0 && !(e.target as HTMLElement).closest(".image-wrapper") && !(e.target as HTMLElement).closest(".zoom-controls") && !(e.target as HTMLElement).closest(".banner");
-    
-    if (e.button === 1 || spacePressed || isLeftClickOnEmpty) {
+    // Start panning on middle-click, or when space is pressed (no cursor drag on empty space)
+    if (e.button === 1 || spacePressed) {
       e.preventDefault();
       const container = workspaceRef.current;
       if (!container) return;
@@ -332,6 +351,21 @@ export default function PlanarApp() {
   const handleGlobalPointerMove = (clientX: number, clientY: number, shiftKey: boolean) => {
     const info = dragInfo.current;
     if (!info.type || !info.imageId) return;
+
+    // Ignore tiny mouse/touch movements (less than 4px) to allow clicking for calibration without canceling
+    const dragDistance = Math.sqrt(Math.pow(clientX - info.startX, 2) + Math.pow(clientY - info.startY, 2));
+    if (dragDistance < 4) return;
+
+    // Cancel calibration/cropping if the user actually starts dragging/moving the image
+    if (isCalibrationActive || croppingImageId) {
+      if (info.type === "drag") {
+        setIsCalibrationActive(false);
+        setCroppingImageId(null);
+        setCropBeforeEdit(null);
+        setCalibrationPoints([]);
+        setCalibrationDistance("");
+      }
+    }
 
     const deltaX = (clientX - info.startX) / (zoom * PX_PER_MM);
     const deltaY = (clientY - info.startY) / (zoom * PX_PER_MM);
@@ -425,7 +459,18 @@ export default function PlanarApp() {
   const handleImageMouseDown = (e: React.MouseEvent, img: ImageItem, actionType: "drag" | "resize" | "rotate") => {
     e.preventDefault();
     e.stopPropagation();
-    if (isCalibrationActive || croppingImageId) return;
+
+    if (isCalibrationActive || croppingImageId) {
+      if (img.id !== selectedImageId) {
+        setIsCalibrationActive(false);
+        setCroppingImageId(null);
+        setCropBeforeEdit(null);
+        setCalibrationPoints([]);
+        setCalibrationDistance("");
+      } else if (actionType !== "drag") {
+        return;
+      }
+    }
 
     setSelectedImageId(img.id);
 
@@ -447,7 +492,18 @@ export default function PlanarApp() {
 
   // Mobile Touch Drag Handler
   const handleImageTouchStart = (e: React.TouchEvent, img: ImageItem, actionType: "drag" | "resize" | "rotate") => {
-    if (isCalibrationActive || croppingImageId) return;
+    if (isCalibrationActive || croppingImageId) {
+      if (img.id !== selectedImageId) {
+        setIsCalibrationActive(false);
+        setCroppingImageId(null);
+        setCropBeforeEdit(null);
+        setCalibrationPoints([]);
+        setCalibrationDistance("");
+      } else if (actionType !== "drag") {
+        return;
+      }
+    }
+
     e.stopPropagation(); // prevent window scrolling/panning gestures
 
     setSelectedImageId(img.id);
@@ -689,11 +745,87 @@ export default function PlanarApp() {
       }
     };
 
-    const handleWindowDrop = (e: DragEvent) => {
+    const handleWindowDrop = async (e: DragEvent) => {
       e.preventDefault();
       setIsDragOver(false);
+
+      // 1) First check for files (local drop)
       if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
         loadImagesFromFiles(e.dataTransfer.files);
+        return;
+      }
+
+      // 2) If no files, check for dragged URLs or HTML
+      if (e.dataTransfer) {
+        let url = "";
+        let name = "imported-image";
+
+        // Try text/uri-list
+        const uriList = e.dataTransfer.getData("text/uri-list");
+        if (uriList) {
+          const lines = uriList.split("\n").map(line => line.trim()).filter(line => line && !line.startsWith("#"));
+          if (lines.length > 0) {
+            url = lines[0];
+          }
+        }
+
+        // Try URL
+        if (!url) {
+          url = e.dataTransfer.getData("URL");
+        }
+
+        // Try text/html to parse image tag src
+        if (!url) {
+          const html = e.dataTransfer.getData("text/html");
+          if (html) {
+            const match = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+            if (match && match[1]) {
+              url = match[1];
+              const altMatch = html.match(/<img[^>]+alt=["']([^"']+)["']/i);
+              if (altMatch && altMatch[1]) {
+                name = altMatch[1];
+              }
+            }
+          }
+        }
+
+        // Try text/plain (often has a fallback URL)
+        if (!url) {
+          const text = e.dataTransfer.getData("text/plain");
+          if (text && (text.startsWith("http://") || text.startsWith("https://") || text.startsWith("data:"))) {
+            url = text.trim();
+          }
+        }
+
+        if (url) {
+          if (name === "imported-image") {
+            try {
+              const urlObj = new URL(url);
+              const pathname = urlObj.pathname;
+              const lastSegment = pathname.split("/").pop();
+              if (lastSegment && lastSegment.includes(".")) {
+                name = lastSegment;
+              }
+            } catch (err) {
+              // Not a valid URL, or data URL
+            }
+          }
+
+          if (url.startsWith("data:")) {
+            const mimeType = url.substring(5, url.indexOf(";")) || "image/jpeg";
+            addImageFromDataUrl(url, name, mimeType);
+          } else {
+            try {
+              const res = await fetch(url);
+              const blob = await res.blob();
+              const dataUrl = await blobToDataUrl(blob);
+              addImageFromDataUrl(dataUrl, name, blob.type || "image/jpeg");
+            } catch (err) {
+              console.warn("Failed to fetch image directly (CORS). Falling back to URL source.", err);
+              addImageFromDataUrl(url, name, "image/jpeg");
+            }
+          }
+        }
       }
     };
 
@@ -747,7 +879,7 @@ export default function PlanarApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Hydration fix & Initial Theme
+  // Hydration fix & Initial Theme & Welcome Check
   useEffect(() => {
     setMounted(true);
     const savedTheme = localStorage.getItem("planar-theme") as "light" | "dark" | null;
@@ -757,7 +889,19 @@ export default function PlanarApp() {
     } else {
       document.documentElement.setAttribute("data-theme", "dark");
     }
+
+    const skipWelcome = localStorage.getItem("planar-skip-welcome") === "true";
+    if (!skipWelcome) {
+      setShowWelcome(true);
+    }
   }, []);
+
+  const handleCloseWelcome = () => {
+    if (dontShowAgain) {
+      localStorage.setItem("planar-skip-welcome", "true");
+    }
+    setShowWelcome(false);
+  };
 
   // Dynamically update favicon based on theme
   useEffect(() => {
@@ -823,6 +967,15 @@ export default function PlanarApp() {
       const preset = PAPER_PRESETS[presetKey];
       setPaperWidth(preset.width);
       setPaperHeight(preset.height);
+    }
+  };
+
+  const handleRemovePage = (c: number, r: number) => {
+    if (c > 0) {
+      setManualCols(c);
+    }
+    if (r > 0) {
+      setManualRows(r);
     }
   };
 
@@ -1292,11 +1445,11 @@ export default function PlanarApp() {
 
     if (images.length === 0) {
       return { 
-        totalWidth: paperWidth, 
-        totalHeight: paperHeight, 
-        cols: 1, 
-        rows: 1, 
-        pagesCount: 1,
+        totalWidth: manualCols * usableWidth + 2 * sheetMargin, 
+        totalHeight: manualRows * usableHeight + 2 * sheetMargin, 
+        cols: manualCols, 
+        rows: manualRows, 
+        pagesCount: manualCols * manualRows,
         usableWidth,
         usableHeight
       };
@@ -1313,8 +1466,8 @@ export default function PlanarApp() {
       if (bottomEdge > maxY) maxY = bottomEdge;
     });
 
-    const cols = Math.max(1, Math.ceil(maxX / usableWidth));
-    const rows = Math.max(1, Math.ceil(maxY / usableHeight));
+    const cols = Math.max(manualCols, Math.ceil(maxX / usableWidth));
+    const rows = Math.max(manualRows, Math.ceil(maxY / usableHeight));
     const pagesCount = cols * rows;
 
     return {
@@ -1329,6 +1482,12 @@ export default function PlanarApp() {
   };
 
   const { totalWidth, totalHeight, cols, rows, pagesCount, usableWidth, usableHeight } = getLayoutDimensions();
+
+  // Synchronize poster grid settings with layout dimensions
+  useEffect(() => {
+    setPosterCols(cols);
+    setPosterRows(rows);
+  }, [cols, rows]);
 
   // The human scale figure is only meaningful for multi-sheet (tiled poster)
   // layouts, and can be toggled off. `personOffset` is the horizontal space it
@@ -1510,11 +1669,128 @@ export default function PlanarApp() {
 
   const startCropping = (id: string) => {
     setSelectedImageId(id);
+    const img = images.find((i) => i.id === id);
+    if (img) {
+      setCropBeforeEdit({ ...img.crop });
+    }
     setCroppingImageId(id);
   };
 
   const stopCropping = () => {
     setCroppingImageId(null);
+    setCropBeforeEdit(null);
+  };
+
+  const cancelCropping = () => {
+    if (croppingImageId && cropBeforeEdit) {
+      setImages((prev) =>
+        prev.map((img) =>
+          img.id === croppingImageId ? { ...img, crop: cropBeforeEdit } : img
+        )
+      );
+    }
+    setCroppingImageId(null);
+    setCropBeforeEdit(null);
+  };
+
+  const handleCropMouseDown = (e: React.MouseEvent, edge: "left" | "right" | "top" | "bottom") => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const img = images.find((i) => i.id === croppingImageId);
+    if (!img) return;
+
+    const initialCrop = { ...img.crop };
+    const wPx = img.targetWidth * PX_PER_MM * zoom;
+    const hPx = img.targetHeight * PX_PER_MM * zoom;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+
+      setImages((prev) =>
+        prev.map((i) => {
+          if (i.id !== croppingImageId) return i;
+
+          let newCrop = { ...i.crop };
+          if (edge === "left") {
+            const deltaPct = (dx / wPx) * 100;
+            newCrop.left = Math.max(0, Math.min(45, initialCrop.left + deltaPct));
+          } else if (edge === "right") {
+            const deltaPct = (-dx / wPx) * 100;
+            newCrop.right = Math.max(0, Math.min(45, initialCrop.right + deltaPct));
+          } else if (edge === "top") {
+            const deltaPct = (dy / hPx) * 100;
+            newCrop.top = Math.max(0, Math.min(45, initialCrop.top + deltaPct));
+          } else if (edge === "bottom") {
+            const deltaPct = (-dy / hPx) * 100;
+            newCrop.bottom = Math.max(0, Math.min(45, initialCrop.bottom + deltaPct));
+          }
+
+          return { ...i, crop: newCrop };
+        })
+      );
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  };
+
+  const handleCropTouchStart = (e: React.TouchEvent, edge: "left" | "right" | "top" | "bottom") => {
+    e.stopPropagation();
+    const touch = e.touches[0];
+    const startX = touch.clientX;
+    const startY = touch.clientY;
+    const img = images.find((i) => i.id === croppingImageId);
+    if (!img) return;
+
+    const initialCrop = { ...img.crop };
+    const wPx = img.targetWidth * PX_PER_MM * zoom;
+    const hPx = img.targetHeight * PX_PER_MM * zoom;
+
+    const handleTouchMove = (moveEvent: TouchEvent) => {
+      const t = moveEvent.touches[0];
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+
+      setImages((prev) =>
+        prev.map((i) => {
+          if (i.id !== croppingImageId) return i;
+
+          let newCrop = { ...i.crop };
+          if (edge === "left") {
+            const deltaPct = (dx / wPx) * 100;
+            newCrop.left = Math.max(0, Math.min(45, initialCrop.left + deltaPct));
+          } else if (edge === "right") {
+            const deltaPct = (-dx / wPx) * 100;
+            newCrop.right = Math.max(0, Math.min(45, initialCrop.right + deltaPct));
+          } else if (edge === "top") {
+            const deltaPct = (dy / hPx) * 100;
+            newCrop.top = Math.max(0, Math.min(45, initialCrop.top + deltaPct));
+          } else if (edge === "bottom") {
+            const deltaPct = (-dy / hPx) * 100;
+            newCrop.bottom = Math.max(0, Math.min(45, initialCrop.bottom + deltaPct));
+          }
+
+          return { ...i, crop: newCrop };
+        })
+      );
+    };
+
+    const handleTouchEnd = () => {
+      document.removeEventListener("touchmove", handleTouchMove);
+      document.removeEventListener("touchend", handleTouchEnd);
+    };
+
+    document.addEventListener("touchmove", handleTouchMove, { passive: false });
+    document.addEventListener("touchend", handleTouchEnd);
   };
 
   // Export functions
@@ -1636,8 +1912,8 @@ export default function PlanarApp() {
 
   // "Maximize images to fit": scale the selected image (or the only image) so
   // it fills a user-defined poster grid of posterCols × posterRows sheets —
-  // as large as the pages, full-bleed, no distortion (overflow is centre-
-  // cropped via the crop system so the result is exactly that many pages).
+  // as large as the pages. Handles optional cropping (default: contain/no-crop)
+  // and auto-rotation (default: no rotation).
   const maximizeToFit = () => {
     const target = selectedImage || (images.length === 1 ? images[0] : null);
     if (!target) {
@@ -1650,22 +1926,91 @@ export default function PlanarApp() {
     const W = cols * usableWidth;
     const H = rows * usableHeight;
     const targetRatio = W / H;
-    const imgRatio = target.width / target.height;
 
-    let left = 0, right = 0, top = 0, bottom = 0;
-    if (imgRatio > targetRatio) {
-      const cut = 100 - (targetRatio / imgRatio) * 100;
-      left = cut / 2;
-      right = cut / 2;
-    } else {
-      const cut = 100 - (imgRatio / targetRatio) * 100;
-      top = cut / 2;
-      bottom = cut / 2;
+    // Determine if we should rotate 90 degrees
+    let rotate90 = false;
+    if (maximizeRotation) {
+      const ratio0 = target.width / target.height;
+      const ratio90 = target.height / target.width;
+      const mismatch0 = Math.max(ratio0 / targetRatio, targetRatio / ratio0);
+      const mismatch90 = Math.max(ratio90 / targetRatio, targetRatio / ratio90);
+      if (mismatch90 < mismatch0) {
+        rotate90 = true;
+      }
     }
 
-    const visFracW = 1 - (left + right) / 100;
-    const newTargetW = W / visFracW;
-    const newTargetH = newTargetW * (target.height / target.width);
+    const origW = target.width;
+    const origH = target.height;
+    const effImgRatio = rotate90 ? (origH / origW) : (origW / origH);
+
+    let left = 0, right = 0, top = 0, bottom = 0;
+    let newTargetW = 0, newTargetH = 0;
+
+    if (maximizeCrop) {
+      // CROP TO FILL (COVER)
+      if (effImgRatio > targetRatio) {
+        // Image is wider than target grid
+        const cut = 100 - (targetRatio / effImgRatio) * 100;
+        if (rotate90) {
+          // Screen horizontal crop -> local top and bottom crop
+          top = cut / 2;
+          bottom = cut / 2;
+          const visFracH = 1 - (top + bottom) / 100;
+          newTargetH = W / visFracH;
+          newTargetW = newTargetH * (origW / origH);
+        } else {
+          // Screen horizontal crop -> local left and right crop
+          left = cut / 2;
+          right = cut / 2;
+          const visFracW = 1 - (left + right) / 100;
+          newTargetW = W / visFracW;
+          newTargetH = newTargetW * (origH / origW);
+        }
+      } else {
+        // Image is taller than target grid
+        const cut = 100 - (effImgRatio / targetRatio) * 100;
+        if (rotate90) {
+          // Screen vertical crop -> local left and right crop
+          left = cut / 2;
+          right = cut / 2;
+          const visFracW = 1 - (left + right) / 100;
+          newTargetW = H / visFracW;
+          newTargetH = newTargetW * (origH / origW);
+        } else {
+          // Screen vertical crop -> local top and bottom crop
+          top = cut / 2;
+          bottom = cut / 2;
+          const visFracH = 1 - (top + bottom) / 100;
+          newTargetH = H / visFracH;
+          newTargetW = newTargetH * (origW / origH);
+        }
+      }
+    } else {
+      // NO CROP (CONTAIN)
+      left = 0;
+      right = 0;
+      top = 0;
+      bottom = 0;
+      if (effImgRatio > targetRatio) {
+        // Width constrained
+        if (rotate90) {
+          newTargetH = W;
+          newTargetW = W * (origW / origH);
+        } else {
+          newTargetW = W;
+          newTargetH = W * (origH / origW);
+        }
+      } else {
+        // Height constrained
+        if (rotate90) {
+          newTargetW = H;
+          newTargetH = H * (origH / origW);
+        } else {
+          newTargetH = H;
+          newTargetW = H * (origW / origH);
+        }
+      }
+    }
 
     setImages((prev) =>
       prev.map((im) =>
@@ -1675,7 +2020,7 @@ export default function PlanarApp() {
               crop: { ...im.crop, left, right, top, bottom, ratioPreset: "free", shape: "rectangle" },
               targetWidth: newTargetW,
               targetHeight: newTargetH,
-              rotation: 0,
+              rotation: rotate90 ? 90 : 0,
               x: 0,
               y: 0,
             }
@@ -1914,26 +2259,44 @@ export default function PlanarApp() {
         />
       );
 
-      if (showSeamGuides) {
-        for (let r = 0; r < rows; r++) {
-          for (let c = 0; c < cols; c++) {
-            sheets.push(
-              <div
-                key={`sheet-${c}-${r}`}
-                style={{
-                  position: "absolute",
-                  width: `${paperWidth * PX_PER_MM}px`,
-                  height: `${paperHeight * PX_PER_MM}px`,
-                  left: `${c * usableWidth * PX_PER_MM}px`,
-                  top: `${r * usableHeight * PX_PER_MM}px`,
-                  border: "1px dotted rgba(128, 128, 128, 0.5)",
-                  backgroundColor: "rgba(255, 255, 255, 0.02)",
-                  pointerEvents: "none",
-                  zIndex: 15,
-                }}
-              />
-            );
-          }
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const isManual = c < manualCols && r < manualRows && !(c === 0 && r === 0);
+          const showVisualSheet = showSeamGuides || isManual;
+
+          sheets.push(
+            <div
+              key={`sheet-${c}-${r}`}
+              className="paper-sheet"
+              style={{
+                position: "absolute",
+                width: `${paperWidth * PX_PER_MM}px`,
+                height: `${paperHeight * PX_PER_MM}px`,
+                left: `${c * usableWidth * PX_PER_MM}px`,
+                top: `${r * usableHeight * PX_PER_MM}px`,
+                border: showVisualSheet ? "1px dotted rgba(128, 128, 128, 0.5)" : "none",
+                backgroundColor: showVisualSheet ? "rgba(255, 255, 255, 0.02)" : "transparent",
+                zIndex: 1,
+              }}
+            >
+              {isManual && (
+                <button
+                  className="page-remove-btn"
+                  style={{
+                    position: "absolute",
+                    top: "8px",
+                    right: "8px",
+                    pointerEvents: "auto",
+                    zIndex: 100,
+                  }}
+                  onClick={() => handleRemovePage(c, r)}
+                  title="Remove manually added page(s)"
+                >
+                  <Minus size={10} strokeWidth={3} />
+                </button>
+              )}
+            </div>
+          );
         }
       }
     }
@@ -1949,7 +2312,7 @@ export default function PlanarApp() {
             alt="Planar Logo" 
             className="logo-icon"
           />
-          <span>Planar</span>
+          <h1 className="logo-title">Planar</h1>
         </div>
         
         <div className="header-controls">
@@ -1964,6 +2327,17 @@ export default function PlanarApp() {
               </button>
             ))}
           </div>
+
+          <a 
+            href="https://github.com/Mason363/Planar" 
+            target="_blank" 
+            rel="noopener noreferrer" 
+            className="icon-btn" 
+            title="GitHub Repository"
+            style={{ color: "var(--text-main)", textDecoration: "none" }}
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: "middle" }}><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
+          </a>
 
           <button className="icon-btn" onClick={toggleTheme} title="Toggle light/dark mode">
             {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
@@ -2154,7 +2528,38 @@ export default function PlanarApp() {
 
               {renderSheets()}
 
-              <div className="canvas-layer">
+              {/* Visual Grid Expand Plus buttons */}
+              <button
+                className="grid-expand-btn"
+                style={{
+                  position: "absolute",
+                  left: `${totalWidth * PX_PER_MM}px`,
+                  top: `${(totalHeight * PX_PER_MM) / 2}px`,
+                  transform: "translate(-50%, -50%)",
+                  zIndex: 100,
+                }}
+                onClick={() => setManualCols(prev => prev + 1)}
+                title="Add Column"
+              >
+                <Plus size={16} />
+              </button>
+
+              <button
+                className="grid-expand-btn"
+                style={{
+                  position: "absolute",
+                  left: `${(totalWidth * PX_PER_MM) / 2}px`,
+                  top: `${totalHeight * PX_PER_MM}px`,
+                  transform: "translate(-50%, -50%)",
+                  zIndex: 100,
+                }}
+                onClick={() => setManualRows(prev => prev + 1)}
+                title="Add Row"
+              >
+                <Plus size={16} />
+              </button>
+
+              <div className="canvas-layer" style={{ zIndex: 5 }}>
                 {images.map((img) => {
                   const isSelected = img.id === selectedImageId;
                   const isCropping = img.id === croppingImageId;
@@ -2181,7 +2586,9 @@ export default function PlanarApp() {
                       className={`image-wrapper ${isSelected ? "selected" : ""}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (!isCalibrationActive && !isCropping) setSelectedImageId(img.id);
+                        if (!isSelected) {
+                          setSelectedImageId(img.id);
+                        }
                       }}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
@@ -2226,23 +2633,55 @@ export default function PlanarApp() {
                           />
                         )}
 
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={img.src}
-                          className="image-content"
-                          alt={img.name}
+                        <div
                           style={{
-                            width: `${imageWidthPct}%`,
-                            height: `${imageHeightPct}%`,
-                            marginLeft: `${offsetXPct}%`,
-                            marginTop: `${optionsYPct}%`,
-                            clipPath: isCropping ? clipPathStyle : "none",
-                            opacity: isCalibrationActive && !isSelected ? 0.4 : 1,
+                            position: "absolute",
+                            left: 0,
+                            top: 0,
+                            width: "100%",
+                            height: "100%",
+                            overflow: "hidden",
+                            clipPath: isCropping ? "none" : clipPathStyle,
                           }}
-                        />
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={img.src}
+                            className="image-content"
+                            alt={img.name}
+                            style={{
+                              width: `${imageWidthPct}%`,
+                              height: `${imageHeightPct}%`,
+                              marginLeft: `${offsetXPct}%`,
+                              marginTop: `${optionsYPct}%`,
+                              opacity: isCalibrationActive && !isSelected ? 0.4 : 1,
+                            }}
+                          />
+                        </div>
 
                         {isCropping && (
-                          <div className="crop-guide-lines" />
+                          <div className="crop-guide-lines">
+                            <div 
+                              className="crop-handle crop-handle-left" 
+                              onMouseDown={(e) => handleCropMouseDown(e, "left")} 
+                              onTouchStart={(e) => handleCropTouchStart(e, "left")} 
+                            />
+                            <div 
+                              className="crop-handle crop-handle-right" 
+                              onMouseDown={(e) => handleCropMouseDown(e, "right")} 
+                              onTouchStart={(e) => handleCropTouchStart(e, "right")} 
+                            />
+                            <div 
+                              className="crop-handle crop-handle-top" 
+                              onMouseDown={(e) => handleCropMouseDown(e, "top")} 
+                              onTouchStart={(e) => handleCropTouchStart(e, "top")} 
+                            />
+                            <div 
+                              className="crop-handle crop-handle-bottom" 
+                              onMouseDown={(e) => handleCropMouseDown(e, "bottom")} 
+                              onTouchStart={(e) => handleCropTouchStart(e, "bottom")} 
+                            />
+                          </div>
                         )}
 
                         {isCalibrationActive && isSelected && calibrationPoints.map((pt, idx) => (
@@ -2297,9 +2736,9 @@ export default function PlanarApp() {
           {selectedImage && croppingImageId === selectedImage.id ? (
             <div className="sidebar-panel">
               <div className="sidebar-header">
-                <button className="sidebar-header-btn" onClick={stopCropping}>
+                <button className="sidebar-header-btn" onClick={cancelCropping}>
                   <ArrowLeft size={16} />
-                  <span>Apply & Exit Crop</span>
+                  <span>Cancel & Go Back</span>
                 </button>
               </div>
 
@@ -2442,98 +2881,109 @@ export default function PlanarApp() {
 
               <section className="sidebar-section">
                 <h2 className="sidebar-section-title">Crop Boundaries</h2>
-                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                  <div className="range-slider-group">
-                    <div className="range-slider-header">
-                      <span>Crop Left</span>
-                      <span>{selectedImage.crop.left}%</span>
+                <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                  <p style={{ fontSize: "11px", color: "var(--text-secondary)", lineHeight: "1.4", margin: 0 }}>
+                    Drag the borders and handles directly on the image to crop, or use the sliders below for fine-tuning.
+                  </p>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                    <div className="range-slider-group">
+                      <div className="range-slider-header" style={{ fontSize: "11px" }}>
+                        <span>Crop Left</span>
+                        <span>{selectedImage.crop.left.toFixed(0)}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="45" 
+                        className="range-input"
+                        value={selectedImage.crop.left} 
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setImages((prev) =>
+                            prev.map((img) =>
+                              img.id === selectedImage.id ? { ...img, crop: { ...img.crop, left: val, ratioPreset: "free" } } : img
+                            )
+                          );
+                        }}
+                      />
                     </div>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="45" 
-                      className="range-input"
-                      value={selectedImage.crop.left} 
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setImages((prev) =>
-                          prev.map((img) =>
-                            img.id === selectedImage.id ? { ...img, crop: { ...img.crop, left: val, ratioPreset: "free" } } : img
-                          )
-                        );
-                      }}
-                    />
+
+                    <div className="range-slider-group">
+                      <div className="range-slider-header" style={{ fontSize: "11px" }}>
+                        <span>Crop Right</span>
+                        <span>{selectedImage.crop.right.toFixed(0)}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="45" 
+                        className="range-input"
+                        value={selectedImage.crop.right} 
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setImages((prev) =>
+                            prev.map((img) =>
+                              img.id === selectedImage.id ? { ...img, crop: { ...img.crop, right: val, ratioPreset: "free" } } : img
+                            )
+                          );
+                        }}
+                      />
+                    </div>
+
+                    <div className="range-slider-group">
+                      <div className="range-slider-header" style={{ fontSize: "11px" }}>
+                        <span>Crop Top</span>
+                        <span>{selectedImage.crop.top.toFixed(0)}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="45" 
+                        className="range-input"
+                        value={selectedImage.crop.top} 
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setImages((prev) =>
+                            prev.map((img) =>
+                              img.id === selectedImage.id ? { ...img, crop: { ...img.crop, top: val, ratioPreset: "free" } } : img
+                            )
+                          );
+                        }}
+                      />
+                    </div>
+
+                    <div className="range-slider-group">
+                      <div className="range-slider-header" style={{ fontSize: "11px" }}>
+                        <span>Crop Bottom</span>
+                        <span>{selectedImage.crop.bottom.toFixed(0)}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="45" 
+                        className="range-input"
+                        value={selectedImage.crop.bottom} 
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setImages((prev) =>
+                            prev.map((img) =>
+                              img.id === selectedImage.id ? { ...img, crop: { ...img.crop, bottom: val, ratioPreset: "free" } } : img
+                            )
+                          );
+                        }}
+                      />
+                    </div>
                   </div>
 
-                  <div className="range-slider-group">
-                    <div className="range-slider-header">
-                      <span>Crop Right</span>
-                      <span>{selectedImage.crop.right}%</span>
-                    </div>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="45" 
-                      className="range-input"
-                      value={selectedImage.crop.right} 
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setImages((prev) =>
-                          prev.map((img) =>
-                            img.id === selectedImage.id ? { ...img, crop: { ...img.crop, right: val, ratioPreset: "free" } } : img
-                          )
-                        );
-                      }}
-                    />
+                  <div style={{ display: "flex", gap: "10px", marginTop: "4px" }}>
+                    <button className="btn btn-secondary" style={{ flex: 1 }} onClick={cancelCropping}>
+                      Cancel
+                    </button>
+                    <button className="btn btn-primary" style={{ flex: 1 }} onClick={stopCropping}>
+                      Apply Crop & Save
+                    </button>
                   </div>
-
-                  <div className="range-slider-group">
-                    <div className="range-slider-header">
-                      <span>Crop Top</span>
-                      <span>{selectedImage.crop.top}%</span>
-                    </div>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="45" 
-                      className="range-input"
-                      value={selectedImage.crop.top} 
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setImages((prev) =>
-                          prev.map((img) =>
-                            img.id === selectedImage.id ? { ...img, crop: { ...img.crop, top: val, ratioPreset: "free" } } : img
-                          )
-                        );
-                      }}
-                    />
-                  </div>
-
-                  <div className="range-slider-group">
-                    <div className="range-slider-header">
-                      <span>Crop Bottom</span>
-                      <span>{selectedImage.crop.bottom}%</span>
-                    </div>
-                    <input 
-                      type="range" 
-                      min="0" 
-                      max="45" 
-                      className="range-input"
-                      value={selectedImage.crop.bottom} 
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setImages((prev) =>
-                          prev.map((img) =>
-                            img.id === selectedImage.id ? { ...img, crop: { ...img.crop, bottom: val, ratioPreset: "free" } } : img
-                          )
-                        );
-                      }}
-                    />
-                  </div>
-
-                  <button className="btn btn-primary" onClick={stopCropping}>
-                    Apply Crop & Save
-                  </button>
                 </div>
               </section>
 
@@ -2645,9 +3095,104 @@ export default function PlanarApp() {
                         />
                       </div>
                     </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "2px" }}>
+                      <label className="checkbox-container">
+                        <input
+                          type="checkbox"
+                          className="visually-hidden"
+                          checked={maximizeCrop}
+                          onChange={(e) => setMaximizeCrop(e.target.checked)}
+                        />
+                        <div className="checkbox-custom">
+                          {maximizeCrop && <Check size={10} strokeWidth={3} />}
+                        </div>
+                        <span>Crop image to fill grid</span>
+                      </label>
+                      <label className="checkbox-container">
+                        <input
+                          type="checkbox"
+                          className="visually-hidden"
+                          checked={maximizeRotation}
+                          onChange={(e) => setMaximizeRotation(e.target.checked)}
+                        />
+                        <div className="checkbox-custom">
+                          {maximizeRotation && <Check size={10} strokeWidth={3} />}
+                        </div>
+                        <span>Auto-rotate to fit best</span>
+                      </label>
+                    </div>
                     <button className="btn btn-secondary" onClick={maximizeToFit}>
                       <Maximize2 size={14} />
                       Maximize this image to fit
+                    </button>
+                    {pagesCount < posterCols * posterRows && (
+                      <div className="badge-warning" style={{ marginTop: "4px" }}>
+                        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                          <AlertCircle size={14} style={{ color: "var(--accent-color)" }} />
+                          <span className="badge-warning-title">Fewer Sheets Created</span>
+                        </div>
+                        <span className="badge-warning-desc">
+                          Only <strong>{pagesCount}</strong> {pagesCount === 1 ? 'page is' : 'pages are'} being created. Extra pages are not added because they are redundant (not needed to display the image).
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              <section className="sidebar-section">
+                <h2 className="sidebar-section-title">Rotate Image</h2>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span className="input-label" style={{ margin: 0 }}>Angle</span>
+                    <span className="input-label" style={{ margin: 0, fontWeight: "bold" }}>{Math.round(selectedImage.rotation)}°</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="315"
+                    step="45"
+                    className="range-input"
+                    value={Math.round(selectedImage.rotation / 45) * 45 % 360}
+                    onChange={(e) => {
+                      const angle = parseInt(e.target.value);
+                      setImages((prev) =>
+                        prev.map((img) =>
+                          img.id === selectedImage.id ? { ...img, rotation: angle } : img
+                        )
+                      );
+                    }}
+                  />
+                  <div style={{ display: "flex", gap: "10px" }}>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ flex: 1, padding: "8px 0" }}
+                      onClick={() => {
+                        const currentSnapped = Math.round(selectedImage.rotation / 45) * 45;
+                        const newAngle = (currentSnapped - 45 + 360) % 360;
+                        setImages((prev) =>
+                          prev.map((img) =>
+                            img.id === selectedImage.id ? { ...img, rotation: newAngle } : img
+                          )
+                        );
+                      }}
+                    >
+                      -45°
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ flex: 1, padding: "8px 0" }}
+                      onClick={() => {
+                        const currentSnapped = Math.round(selectedImage.rotation / 45) * 45;
+                        const newAngle = (currentSnapped + 45) % 360;
+                        setImages((prev) =>
+                          prev.map((img) =>
+                            img.id === selectedImage.id ? { ...img, rotation: newAngle } : img
+                          )
+                        );
+                      }}
+                    >
+                      +45°
                     </button>
                   </div>
                 </div>
@@ -2922,50 +3467,7 @@ export default function PlanarApp() {
                       Distribute (Auto arrange)
                     </button>
 
-                    <div style={{ borderTop: "1px solid var(--border-main)", paddingTop: "12px", marginTop: "2px", display: "flex", flexDirection: "column", gap: "10px" }}>
-                      <label className="input-label">Maximize image across a poster grid (sheets)</label>
-                      <div className="settings-grid">
-                        <div className="input-group">
-                          <label className="input-label">Across (X)</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="20"
-                            className="input-field"
-                            value={posterCols}
-                            onChange={(e) => {
-                              const v = parseInt(e.target.value);
-                              if (!isNaN(v)) setPosterCols(Math.max(1, v));
-                            }}
-                          />
-                        </div>
-                        <div className="input-group">
-                          <label className="input-label">Down (Y)</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="20"
-                            className="input-field"
-                            value={posterRows}
-                            onChange={(e) => {
-                              const v = parseInt(e.target.value);
-                              if (!isNaN(v)) setPosterRows(Math.max(1, v));
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <button
-                        className="btn btn-secondary"
-                        onClick={maximizeToFit}
-                        disabled={images.length === 0}
-                      >
-                        <Maximize2 size={14} />
-                        Maximize images to fit
-                      </button>
-                      <p style={{ fontSize: "11px", color: "var(--text-secondary)", lineHeight: "1.4", margin: 0 }}>
-                        Blows the selected image up to fill exactly {Math.max(1, Math.round(posterCols))} × {Math.max(1, Math.round(posterRows))} sheets, full-bleed (edges are cropped to fit, nothing distorted).
-                      </p>
-                    </div>
+
                 </div>
               </div>
 
@@ -3080,7 +3582,9 @@ export default function PlanarApp() {
               <div>
                 <h2 className="glue-modal-title">Assembly Guide</h2>
                 <p className="glue-modal-subtitle">
-                  Print all {pagesCount} sheets, then lay them out in this {cols} × {rows} grid.{" "}
+                  Print all {pagesCount} sheets ({paperPreset === "custom"
+                    ? `Custom: ${Number(convertMmToActiveUnit(paperWidth).toFixed(1))} × ${Number(convertMmToActiveUnit(paperHeight).toFixed(1))} ${getUnitSymbol()}`
+                    : PAPER_PRESETS[paperPreset]?.name || paperPreset}), then lay them out in this {cols} × {rows} grid.{" "}
                   {overlapGluing ? (
                     <>
                       <strong>Overlap</strong> each sheet onto its neighbour up to the thin seam line
@@ -3145,6 +3649,51 @@ export default function PlanarApp() {
             <button className="btn btn-primary" onClick={() => setShowGluePreview(false)}>
               Got it
             </button>
+          </div>
+        </div>
+      )}
+      {showWelcome && (
+        <div className="welcome-modal-overlay">
+          <div className="welcome-modal">
+            <div className="welcome-modal-header">
+              <h2 className="welcome-modal-title">Welcome to Planar</h2>
+            </div>
+            <div className="welcome-modal-body">
+              <p>
+                Planar helps you <span className="highlight-text">scale</span>, <span className="highlight-text">crop</span>, and <span className="highlight-text">arrange</span> images onto sheets of paper for easy printing.
+              </p>
+              <p style={{ marginTop: "4px" }}>
+                Tile large posters, calibrate exact physical dimensions, and remove backgrounds instantly. All processing is private and local.
+              </p>
+              <a 
+                href="https://github.com/Mason363/Contour" 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="welcome-promo-box"
+              >
+                <span>
+                  Check out <strong>Contour</strong>— remove backgrounds, refine cut-outs with magic brushes, and vectorize images.
+                </span>
+                <ArrowUpRight size={16} />
+              </a>
+            </div>
+            <div className="welcome-modal-footer">
+              <label className="checkbox-container" style={{ margin: 0 }}>
+                <input
+                  type="checkbox"
+                  className="visually-hidden"
+                  checked={dontShowAgain}
+                  onChange={(e) => setDontShowAgain(e.target.checked)}
+                />
+                <div className="checkbox-custom">
+                  {dontShowAgain && <Check size={10} strokeWidth={3} />}
+                </div>
+                <span>Don't show again</span>
+              </label>
+              <button className="btn btn-primary" onClick={handleCloseWelcome}>
+                OK
+              </button>
+            </div>
           </div>
         </div>
       )}

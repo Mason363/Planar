@@ -1,20 +1,24 @@
 # Planar
 
-Minimalist client-side web utility for calibrating, scaling, cropping, and arranging images onto standard or custom paper grid sheets for printing.
+**Scale, crop, and tile images onto sheets of paper for easy printing.**
 
-Planar is a modern, lightweight grid tool built for designers, paper-crafters, and creators. It allows you to arrange, crop, scale, and tile images across multiple physical print pages locally in your browser.
+Planar is a modern, lightweight, serverless browser utility built for designers, paper-crafters, and creators. It allows you to arrange, calibrate, crop, scale, and tile images across multiple physical print pages locally on your device.
+
+🔗 **Live Website**: [planar.masn.studio](https://planar.masn.studio)
 
 ---
 
 ## 🚀 Key Features
 
-*   **Real-World Physical Calibration**: Calibrate real-world dimensions (mm, cm, in) by selecting two points on your image and entering their actual measurement.
-*   **Tiled Grid & Flow Layouts**: Distribute images dynamically across single sheets or multi-page tiled print layouts.
-*   **Maximise Paper Space Mode**: Automatically scale and pack images to use the maximum printable paper surface area.
-*   **Local Background Removal (RemBG)**: Remove backgrounds locally in your browser using high-performance, client-side WASM models (no server uploads, 100% private).
-*   **Advanced Presets & Shapes**: Crop images into rectangles, circles, stars, or regular polygons. Control fillet corner radii dynamically.
-*   **Smooth Gesture Canvas**: Interactive canvas supporting trackpad pinching/swiping, physical mouse wheel zoom, middle-click panning, and mobile multi-touch gestures.
-*   **Modern Minimalism**: Sleek dark and light modes, zero bloat, and highly polished micro-interactions.
+*   **Real-World Physical Calibration**: Calibrate exact real-world dimensions (mm, cm, in) by selecting two points on your image and entering their actual measurement.
+*   **Intuitive Direct Cropping**: Crop images by dragging borders and handles directly on the canvas preview, complete with real-time guides, an uncropped dimmed background, and a canvas-level cancellation history.
+*   **Tiled Grid & Poster Layouts**: Split and tile large images dynamically across multi-page print sheets. The grid automatically manages layout dimensions.
+*   **Grid Expansion Tool**: Add rows or columns to the canvas paper sheets with one-click `+` buttons on the pasteboard, or remove sheets on hover.
+*   **Snapping Rotation Tool**: Rotate images on the canvas, or use the sidebar rotation slider and buttons that snap strongly to 45° increments.
+*   **Drag-and-Drop URL Imports**: Drag images directly from local folders or other browser tabs over the canvas to import them instantly.
+*   **Local Background Removal (RemBG)**: Remove backgrounds locally in your browser using high-performance, client-side ONNX Runtime WebAssembly models. All processing is 100% private.
+*   **Smooth Gesture Canvas**: Premium canvas workspace supporting trackpad pinching/zooming, physical mouse wheel zoom, middle-click panning, Space + drag, and mobile touch gestures.
+*   **Modern Minimalism**: Polished dark and light modes, zero bloat, and elegant micro-interactions.
 
 ---
 
@@ -24,7 +28,7 @@ Planar is a modern, lightweight grid tool built for designers, paper-crafters, a
 
 Make sure you have **Node.js** installed on your system.
 
-### Installation
+### Installation & Run
 
 1. Clone this repository:
    ```bash
@@ -49,11 +53,11 @@ Make sure you have **Node.js** installed on your system.
 
 ## 💻 Tech Stack
 
-*   **Framework**: Next.js (React)
+*   **Framework**: Next.js (React 19)
 *   **Language**: TypeScript
-*   **Styling**: Pure CSS (vanilla variables, responsive layout system)
+*   **Styling**: Pure Vanilla CSS (custom variables, responsive layout system)
 *   **WASM Engine**: `@imgly/background-removal` for local background removal
-*   **Icons**: Inline SVGs & Lucide React
+*   **Icons**: Lucide React & inline SVGs
 
 ---
 
