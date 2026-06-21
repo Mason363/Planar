@@ -25,6 +25,8 @@ import {
   Coffee,
   User,
   Printer,
+  Undo2,
+  Redo2,
   X
 } from "lucide-react";
 
@@ -189,6 +191,7 @@ export default function PlanarApp() {
   
   // Background removal loading progress
   const [bgRemovalProgress, setBgRemovalProgress] = useState<number | null>(null);
+  const [bgRemovalStage, setBgRemovalStage] = useState<"downloading" | "processing" | null>(null);
   const [isBgRemovalProcessing, setIsBgRemovalProcessing] = useState<boolean>(false);
 
   // Calibration state
@@ -199,6 +202,49 @@ export default function PlanarApp() {
   // Crop mode state
   const [croppingImageId, setCroppingImageId] = useState<string | null>(null);
   const [cropBeforeEdit, setCropBeforeEdit] = useState<ImageCrop | null>(null);
+
+  // Undo/Redo history tracking
+  const historyRef = useRef<ImageItem[][]>([]);
+  const historyIndexRef = useRef<number>(-1);
+  const [historyLength, setHistoryLength] = useState(0);
+  const [historyPos, setHistoryPos] = useState(-1);
+
+  const pushToHistory = (newImages: ImageItem[]) => {
+    if (historyIndexRef.current >= 0 && JSON.stringify(historyRef.current[historyIndexRef.current]) === JSON.stringify(newImages)) {
+      return;
+    }
+    const nextHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
+    const updatedHistory = [...nextHistory, newImages];
+    historyRef.current = updatedHistory;
+    historyIndexRef.current = updatedHistory.length - 1;
+    setHistoryLength(updatedHistory.length);
+    setHistoryPos(historyIndexRef.current);
+  };
+
+  const commitCurrentStateToHistory = () => {
+    setImages((prev) => {
+      pushToHistory(prev);
+      return prev;
+    });
+  };
+
+  const undo = () => {
+    if (historyIndexRef.current > 0) {
+      const nextIndex = historyIndexRef.current - 1;
+      historyIndexRef.current = nextIndex;
+      setHistoryPos(nextIndex);
+      setImages(historyRef.current[nextIndex]);
+    }
+  };
+
+  const redo = () => {
+    if (historyIndexRef.current < historyRef.current.length - 1) {
+      const nextIndex = historyIndexRef.current + 1;
+      historyIndexRef.current = nextIndex;
+      setHistoryPos(nextIndex);
+      setImages(historyRef.current[nextIndex]);
+    }
+  };
 
   // DOM Refs
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -242,6 +288,11 @@ export default function PlanarApp() {
     }
   }, [zoom]);
 
+  // Initialize history on mount
+  useEffect(() => {
+    pushToHistory([]);
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const tag = document.activeElement?.tagName.toLowerCase();
@@ -249,13 +300,30 @@ export default function PlanarApp() {
         return;
       }
 
-      if (e.code === "Space") {
+      // Undo/Redo shortcuts
+      const isMac = typeof window !== "undefined" && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const isUndo = (e.key === "z" || e.key === "Z") && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey;
+      const isRedo = 
+        ((e.key === "y" || e.key === "Y") && (isMac ? e.metaKey : e.ctrlKey)) ||
+        ((e.key === "z" || e.key === "Z") && (isMac ? e.metaKey : e.ctrlKey) && e.shiftKey);
+
+      if (isUndo) {
+        e.preventDefault();
+        undo();
+      } else if (isRedo) {
+        e.preventDefault();
+        redo();
+      } else if (e.code === "Space") {
         e.preventDefault();
         setSpacePressed(true);
       } else if (e.key === "Delete" || e.key === "Backspace") {
         if (selectedImageId) {
           e.preventDefault();
-          setImages((prev) => prev.filter((i) => i.id !== selectedImageId));
+          setImages((prev) => {
+            const next = prev.filter((i) => i.id !== selectedImageId);
+            pushToHistory(next);
+            return next;
+          });
           setSelectedImageId(null);
         }
       }
@@ -1133,10 +1201,18 @@ export default function PlanarApp() {
       if (type === "image/png") {
         getImageBounds(img).then((bounds) => {
           newImg.bounds = bounds;
-          setImages((prev) => distributeImagesList([...prev, newImg]));
+          setImages((prev) => {
+            const next = distributeImagesList([...prev, newImg]);
+            pushToHistory(next);
+            return next;
+          });
         });
       } else {
-        setImages((prev) => distributeImagesList([...prev, newImg]));
+        setImages((prev) => {
+          const next = distributeImagesList([...prev, newImg]);
+          pushToHistory(next);
+          return next;
+        });
       }
     };
     img.src = dataUrl;
@@ -1198,6 +1274,7 @@ export default function PlanarApp() {
   const handleRemoveBackground = async (image: ImageItem) => {
     setIsBgRemovalProcessing(true);
     setBgRemovalProgress(0);
+    setBgRemovalStage("downloading");
     try {
       const { removeBackground } = await import("@imgly/background-removal");
       
@@ -1208,36 +1285,51 @@ export default function PlanarApp() {
         "ort-wasm-simd-threaded.jsep.wasm": 2.5 * 1024 * 1024,
         "isnet.onnx": 44 * 1024 * 1024
       };
-
+ 
       const config: any = {
         publicPath: "https://staticimgly.com/@imgly/background-removal-data/1.7.0/dist/",
         debug: true,
         model: "isnet", // Use the high-quality full model for superior edge detection
         progress: (key: string, current: number, total: number) => {
-          const fileKey = key.split("/").pop() || key;
-          downloadedSizes[fileKey] = current;
-          if (total > 0) {
-            expectedSizes[fileKey] = total;
+          if (key.startsWith("fetch:")) {
+            setBgRemovalStage("downloading");
+            const fileKey = key.split("/").pop() || key;
+            downloadedSizes[fileKey] = current;
+            if (total > 0) {
+              expectedSizes[fileKey] = total;
+            }
+ 
+            const totalDownloaded = Object.values(downloadedSizes).reduce((a, b) => a + b, 0);
+            
+            let totalExpected = 0;
+            const activeModelKey = "isnet.onnx";
+            const activeWasmKey = "ort-wasm-simd-threaded.wasm";
+ 
+            const keysToSum = [activeWasmKey, activeModelKey];
+            keysToSum.forEach(k => {
+              totalExpected += expectedSizes[k] || 0;
+            });
+ 
+            if (totalExpected === 0) totalExpected = 46.5 * 1024 * 1024; // fallback
+ 
+            const pct = Math.min(100, Math.round((totalDownloaded / totalExpected) * 100));
+            setBgRemovalProgress(isNaN(pct) ? 0 : pct);
+          } else if (key.startsWith("compute:")) {
+            setBgRemovalStage("processing");
+            if (key === "compute:inference" && total > 0) {
+              const pct = Math.min(100, Math.round((current / total) * 100));
+              setBgRemovalProgress(pct);
+            } else if (key === "compute:decode") {
+              setBgRemovalProgress(5);
+            } else if (key === "compute:mask") {
+              setBgRemovalProgress(90);
+            } else if (key === "compute:encode") {
+              setBgRemovalProgress(95);
+            }
           }
-
-          const totalDownloaded = Object.values(downloadedSizes).reduce((a, b) => a + b, 0);
-          
-          let totalExpected = 0;
-          const activeModelKey = "isnet.onnx";
-          const activeWasmKey = "ort-wasm-simd-threaded.wasm";
-
-          const keysToSum = [activeWasmKey, activeModelKey];
-          keysToSum.forEach(k => {
-            totalExpected += expectedSizes[k];
-          });
-
-          if (totalExpected === 0) totalExpected = expectedSizes[activeModelKey];
-
-          const pct = Math.min(100, Math.round((totalDownloaded / totalExpected) * 100));
-          setBgRemovalProgress(isNaN(pct) ? 0 : pct);
         }
       };
-
+ 
       let blob: Blob;
       if (image.originalSrc.startsWith("data:")) {
         const parts = image.originalSrc.split(",");
@@ -1253,15 +1345,15 @@ export default function PlanarApp() {
         const response = await fetch(image.originalSrc);
         blob = await response.blob();
       }
-
+ 
       const transparentBlob = await removeBackground(blob, config);
       const transparentUrl = URL.createObjectURL(transparentBlob);
-
+ 
       const tempImg = new Image();
       tempImg.onload = () => {
         getImageBounds(tempImg).then((bounds) => {
-          setImages((prev) =>
-            prev.map((img) =>
+          setImages((prev) => {
+            const next = prev.map((img) =>
               img.id === image.id
                 ? {
                     ...img,
@@ -1271,18 +1363,22 @@ export default function PlanarApp() {
                     useImageBounds: !!bounds,
                   }
                 : img
-            )
-          );
+            );
+            pushToHistory(next);
+            return next;
+          });
           setIsBgRemovalProcessing(false);
           setBgRemovalProgress(null);
+          setBgRemovalStage(null);
         });
       };
       tempImg.src = transparentUrl;
-
+ 
     } catch (error) {
       console.error("Background removal failed:", error);
       setIsBgRemovalProcessing(false);
       setBgRemovalProgress(null);
+      setBgRemovalStage(null);
       alert("Failed to remove background. Ensure WebAssembly/ONNX is supported in this browser.");
     }
   };
@@ -1336,8 +1432,8 @@ export default function PlanarApp() {
     const targetW = selectedImage.width * scale;
     const targetH = selectedImage.height * scale;
 
-    setImages((prev) =>
-      prev.map((img) =>
+    setImages((prev) => {
+      const next = prev.map((img) =>
         img.id === selectedImage.id
           ? {
               ...img,
@@ -1345,12 +1441,55 @@ export default function PlanarApp() {
               targetHeight: targetH,
             }
           : img
-      )
-    );
+      );
+      pushToHistory(next);
+      return next;
+    });
 
     setIsCalibrationActive(false);
     setCalibrationPoints([]);
     setCalibrationDistance("");
+  };
+
+  const handleAutoCrop = () => {
+    if (!selectedImage) return;
+    const imgEl = new Image();
+    imgEl.onload = async () => {
+      const bounds = await getImageBounds(imgEl);
+      if (!bounds) {
+        alert("Could not detect content boundaries for auto-cropping.");
+        return;
+      }
+      
+      const naturalW = imgEl.naturalWidth;
+      const naturalH = imgEl.naturalHeight;
+      
+      const left = (bounds.x / naturalW) * 100;
+      const right = ((naturalW - (bounds.x + bounds.w)) / naturalW) * 100;
+      const top = (bounds.y / naturalH) * 100;
+      const bottom = ((naturalH - (bounds.y + bounds.h)) / naturalH) * 100;
+      
+      setImages((prev) => {
+        const next = prev.map((img) =>
+          img.id === selectedImage.id
+            ? {
+                ...img,
+                crop: {
+                  ...img.crop,
+                  left,
+                  right,
+                  top,
+                  bottom,
+                  ratioPreset: "free" as const,
+                }
+              }
+            : img
+        );
+        pushToHistory(next);
+        return next;
+      });
+    };
+    imgEl.src = selectedImage.src;
   };
 
   // Snap crop preset ratio
@@ -1392,11 +1531,13 @@ export default function PlanarApp() {
   const handleCropPresetChange = (preset: ImageCrop["ratioPreset"]) => {
     if (!selectedImage) return;
     const updatedCrop = snapCropToRatio(selectedImage, preset);
-    setImages((prev) =>
-      prev.map((img) =>
+    setImages((prev) => {
+      const next = prev.map((img) =>
         img.id === selectedImage.id ? { ...img, crop: updatedCrop } : img
-      )
-    );
+      );
+      pushToHistory(next);
+      return next;
+    });
   };
 
   // Clip Path generators
@@ -1648,6 +1789,7 @@ export default function PlanarApp() {
   };
 
   const handleGlobalMouseUp = () => {
+    commitCurrentStateToHistory();
     dragInfo.current = {
       type: null,
       imageId: "",
@@ -1677,17 +1819,20 @@ export default function PlanarApp() {
   };
 
   const stopCropping = () => {
+    commitCurrentStateToHistory();
     setCroppingImageId(null);
     setCropBeforeEdit(null);
   };
 
   const cancelCropping = () => {
     if (croppingImageId && cropBeforeEdit) {
-      setImages((prev) =>
-        prev.map((img) =>
+      setImages((prev) => {
+        const next = prev.map((img) =>
           img.id === croppingImageId ? { ...img, crop: cropBeforeEdit } : img
-        )
-      );
+        );
+        pushToHistory(next);
+        return next;
+      });
     }
     setCroppingImageId(null);
     setCropBeforeEdit(null);
@@ -1735,6 +1880,7 @@ export default function PlanarApp() {
     };
 
     const handleMouseUp = () => {
+      commitCurrentStateToHistory();
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
     };
@@ -1785,6 +1931,7 @@ export default function PlanarApp() {
     };
 
     const handleTouchEnd = () => {
+      commitCurrentStateToHistory();
       document.removeEventListener("touchmove", handleTouchMove);
       document.removeEventListener("touchend", handleTouchEnd);
     };
@@ -2012,12 +2159,12 @@ export default function PlanarApp() {
       }
     }
 
-    setImages((prev) =>
-      prev.map((im) =>
+    setImages((prev) => {
+      const next = prev.map((im) =>
         im.id === target.id
           ? {
               ...im,
-              crop: { ...im.crop, left, right, top, bottom, ratioPreset: "free", shape: "rectangle" },
+              crop: { ...im.crop, left, right, top, bottom, ratioPreset: "free", shape: "rectangle" } as ImageCrop,
               targetWidth: newTargetW,
               targetHeight: newTargetH,
               rotation: rotate90 ? 90 : 0,
@@ -2025,8 +2172,10 @@ export default function PlanarApp() {
               y: 0,
             }
           : im
-      )
-    );
+      );
+      pushToHistory(next);
+      return next;
+    });
   };
 
   const generatePageCanvas = async (pageIndex: number, renderScale = 6): Promise<HTMLCanvasElement> => {
@@ -2328,6 +2477,31 @@ export default function PlanarApp() {
             ))}
           </div>
 
+          <button 
+            className="icon-btn" 
+            onClick={undo} 
+            disabled={historyPos <= 0} 
+            title="Undo (Cmd/Ctrl + Z)"
+            style={{ 
+              opacity: historyPos <= 0 ? 0.4 : 1, 
+              cursor: historyPos <= 0 ? "default" : "pointer",
+            }}
+          >
+            <Undo2 size={16} />
+          </button>
+          <button 
+            className="icon-btn" 
+            onClick={redo} 
+            disabled={historyPos >= historyLength - 1} 
+            title="Redo (Cmd/Ctrl + Shift + Z or Y)"
+            style={{ 
+              opacity: historyPos >= historyLength - 1 ? 0.4 : 1, 
+              cursor: historyPos >= historyLength - 1 ? "default" : "pointer",
+            }}
+          >
+            <Redo2 size={16} />
+          </button>
+
           <a 
             href="https://github.com/Mason363/Planar" 
             target="_blank" 
@@ -2394,9 +2568,13 @@ export default function PlanarApp() {
             <div className="banner" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
               <RefreshCw size={14} className="animate-spin" style={{ animation: "spin 2s linear infinite" }} />
               <div>
-                <span className="banner-title">Removing Background...</span>
+                <span className="banner-title">
+                  {bgRemovalStage === "processing" ? "Removing Background..." : "Downloading Model..."}
+                </span>
                 <p style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
-                  Downloading RemBG model: {bgRemovalProgress}%
+                  {bgRemovalStage === "processing" 
+                    ? `Processing image: ${bgRemovalProgress}%` 
+                    : `Downloading assets: ${bgRemovalProgress}%`}
                 </p>
               </div>
             </div>
@@ -2769,11 +2947,13 @@ export default function PlanarApp() {
                       value={selectedImage.crop.shape}
                       onChange={(e) => {
                         const shape = e.target.value as ImageCrop["shape"];
-                        setImages((prev) =>
-                          prev.map((img) =>
+                        setImages((prev) => {
+                          const next = prev.map((img) =>
                             img.id === selectedImage.id ? { ...img, crop: { ...img.crop, shape } } : img
-                          )
-                        );
+                          );
+                          pushToHistory(next);
+                          return next;
+                        });
                       }}
                     >
                       <option value="rectangle">Rectangle / Oval</option>
@@ -2794,13 +2974,15 @@ export default function PlanarApp() {
                         onChange={(e) => {
                           const val = parseFloat(e.target.value);
                           if (!isNaN(val)) {
-                            setImages((prev) =>
-                              prev.map((img) =>
+                            setImages((prev) => {
+                              const next = prev.map((img) =>
                                 img.id === selectedImage.id 
                                   ? { ...img, crop: { ...img.crop, cornerRadius: convertActiveUnitToMm(val) } } 
                                   : img
-                              )
-                            );
+                              );
+                              pushToHistory(next);
+                              return next;
+                            });
                           }
                         }}
                       />
@@ -2820,11 +3002,13 @@ export default function PlanarApp() {
                           onChange={(e) => {
                             const val = parseInt(e.target.value);
                             if (!isNaN(val)) {
-                              setImages((prev) =>
-                                prev.map((img) =>
+                              setImages((prev) => {
+                                const next = prev.map((img) =>
                                   img.id === selectedImage.id ? { ...img, crop: { ...img.crop, starPoints: val } } : img
-                                )
-                              );
+                                );
+                                pushToHistory(next);
+                                return next;
+                              });
                             }
                           }}
                         />
@@ -2841,11 +3025,13 @@ export default function PlanarApp() {
                           onChange={(e) => {
                             const val = parseFloat(e.target.value);
                             if (!isNaN(val)) {
-                              setImages((prev) =>
-                                prev.map((img) =>
+                              setImages((prev) => {
+                                const next = prev.map((img) =>
                                   img.id === selectedImage.id ? { ...img, crop: { ...img.crop, starInnerRatio: val } } : img
-                                )
-                              );
+                                );
+                                pushToHistory(next);
+                                return next;
+                              });
                             }
                           }}
                         />
@@ -2865,11 +3051,13 @@ export default function PlanarApp() {
                         onChange={(e) => {
                           const val = parseInt(e.target.value);
                           if (!isNaN(val)) {
-                            setImages((prev) =>
-                              prev.map((img) =>
+                            setImages((prev) => {
+                              const next = prev.map((img) =>
                                 img.id === selectedImage.id ? { ...img, crop: { ...img.crop, polygonSides: val } } : img
-                              )
-                            );
+                              );
+                              pushToHistory(next);
+                              return next;
+                            });
                           }
                         }}
                       />
@@ -2906,6 +3094,8 @@ export default function PlanarApp() {
                             )
                           );
                         }}
+                        onMouseUp={commitCurrentStateToHistory}
+                        onTouchEnd={commitCurrentStateToHistory}
                       />
                     </div>
 
@@ -2928,6 +3118,8 @@ export default function PlanarApp() {
                             )
                           );
                         }}
+                        onMouseUp={commitCurrentStateToHistory}
+                        onTouchEnd={commitCurrentStateToHistory}
                       />
                     </div>
 
@@ -2950,6 +3142,8 @@ export default function PlanarApp() {
                             )
                           );
                         }}
+                        onMouseUp={commitCurrentStateToHistory}
+                        onTouchEnd={commitCurrentStateToHistory}
                       />
                     </div>
 
@@ -2972,6 +3166,8 @@ export default function PlanarApp() {
                             )
                           );
                         }}
+                        onMouseUp={commitCurrentStateToHistory}
+                        onTouchEnd={commitCurrentStateToHistory}
                       />
                     </div>
                   </div>
@@ -3015,8 +3211,8 @@ export default function PlanarApp() {
                           const val = parseFloat(e.target.value);
                           if (!isNaN(val)) {
                             const ratio = selectedImage.targetHeight / selectedImage.targetWidth;
-                            setImages((prev) =>
-                              prev.map((img) =>
+                            setImages((prev) => {
+                              const next = prev.map((img) =>
                                 img.id === selectedImage.id
                                   ? {
                                       ...img,
@@ -3024,8 +3220,10 @@ export default function PlanarApp() {
                                       targetHeight: convertActiveUnitToMm(val) * ratio,
                                     }
                                   : img
-                              )
-                            );
+                              );
+                              pushToHistory(next);
+                              return next;
+                            });
                           }
                         }}
                       />
@@ -3042,8 +3240,8 @@ export default function PlanarApp() {
                           const val = parseFloat(e.target.value);
                           if (!isNaN(val)) {
                             const ratio = selectedImage.targetWidth / selectedImage.targetHeight;
-                            setImages((prev) =>
-                              prev.map((img) =>
+                            setImages((prev) => {
+                              const next = prev.map((img) =>
                                 img.id === selectedImage.id
                                   ? {
                                       ...img,
@@ -3051,8 +3249,10 @@ export default function PlanarApp() {
                                       targetWidth: convertActiveUnitToMm(val) * ratio,
                                     }
                                   : img
-                              )
-                            );
+                              );
+                              pushToHistory(next);
+                              return next;
+                            });
                           }
                         }}
                       />
@@ -3162,6 +3362,8 @@ export default function PlanarApp() {
                         )
                       );
                     }}
+                    onMouseUp={commitCurrentStateToHistory}
+                    onTouchEnd={commitCurrentStateToHistory}
                   />
                   <div style={{ display: "flex", gap: "10px" }}>
                     <button
@@ -3170,11 +3372,13 @@ export default function PlanarApp() {
                       onClick={() => {
                         const currentSnapped = Math.round(selectedImage.rotation / 45) * 45;
                         const newAngle = (currentSnapped - 45 + 360) % 360;
-                        setImages((prev) =>
-                          prev.map((img) =>
+                        setImages((prev) => {
+                          const next = prev.map((img) =>
                             img.id === selectedImage.id ? { ...img, rotation: newAngle } : img
-                          )
-                        );
+                          );
+                          pushToHistory(next);
+                          return next;
+                        });
                       }}
                     >
                       -45°
@@ -3185,11 +3389,13 @@ export default function PlanarApp() {
                       onClick={() => {
                         const currentSnapped = Math.round(selectedImage.rotation / 45) * 45;
                         const newAngle = (currentSnapped + 45) % 360;
-                        setImages((prev) =>
-                          prev.map((img) =>
+                        setImages((prev) => {
+                          const next = prev.map((img) =>
                             img.id === selectedImage.id ? { ...img, rotation: newAngle } : img
-                          )
-                        );
+                          );
+                          pushToHistory(next);
+                          return next;
+                        });
                       }}
                     >
                       +45°
@@ -3210,6 +3416,17 @@ export default function PlanarApp() {
                     Crop Image Bounds
                   </button>
 
+                  {(selectedImage.backgroundRemoved || selectedImage.mimeType === "image/png") && (
+                    <button 
+                      className="btn btn-secondary" 
+                      onClick={handleAutoCrop}
+                      title="Shrink crop box to tightly fit the non-transparent content"
+                    >
+                      <Scissors size={14} />
+                      Auto Crop Content
+                    </button>
+                  )}
+
                   {selectedImage.mimeType === "image/png" && selectedImage.bounds && (
                     <label className="checkbox-container">
                       <input
@@ -3218,13 +3435,15 @@ export default function PlanarApp() {
                         checked={selectedImage.useImageBounds}
                         onChange={(e) => {
                           const checked = e.target.checked;
-                          setImages((prev) =>
-                            prev.map((img) =>
+                          setImages((prev) => {
+                            const next = prev.map((img) =>
                               img.id === selectedImage.id
                                 ? { ...img, useImageBounds: checked }
                                 : img
-                            )
-                          );
+                            );
+                            pushToHistory(next);
+                            return next;
+                          });
                         }}
                       />
                       <div className="checkbox-custom">
@@ -3261,7 +3480,11 @@ export default function PlanarApp() {
                 <button 
                   className="btn btn-danger" 
                   onClick={() => {
-                    setImages((prev) => prev.filter((i) => i.id !== selectedImage.id));
+                    setImages((prev) => {
+                      const next = prev.filter((i) => i.id !== selectedImage.id);
+                      pushToHistory(next);
+                      return next;
+                    });
                     setSelectedImageId(null);
                   }}
                 >
@@ -3414,7 +3637,11 @@ export default function PlanarApp() {
                         <button 
                           onClick={(e) => {
                             e.stopPropagation();
-                            setImages((prev) => prev.filter((i) => i.id !== img.id));
+                            setImages((prev) => {
+                              const next = prev.filter((i) => i.id !== img.id);
+                              pushToHistory(next);
+                              return next;
+                            });
                           }}
                           title="Remove image"
                           style={{ padding: "4px", color: "var(--text-muted)", cursor: "pointer" }}
@@ -3460,7 +3687,11 @@ export default function PlanarApp() {
 
                     <button
                       className="btn btn-secondary"
-                      onClick={() => setImages((prev) => distributeImagesList(prev))}
+                      onClick={() => setImages((prev) => {
+                        const next = distributeImagesList(prev);
+                        pushToHistory(next);
+                        return next;
+                      })}
                       disabled={images.length === 0}
                     >
                       <Grid size={14} />
