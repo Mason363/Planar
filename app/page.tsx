@@ -1630,10 +1630,9 @@ export default function PlanarApp() {
     setPosterRows(rows);
   }, [cols, rows]);
 
-  // The human scale figure is only meaningful for multi-sheet (tiled poster)
-  // layouts, and can be toggled off. `personOffset` is the horizontal space it
+  // The human scale figure can be toggled off. `personOffset` is the horizontal space it
   // reserves to the left of the sheets (figure width + a 20mm gap).
-  const personVisible = pagesCount > 1 && showPerson;
+  const personVisible = showPerson;
   const personOffset = personVisible ? PERSON_W + 20 : 0;
 
   // When the human figure appears or disappears, glide the camera to reframe
@@ -2607,8 +2606,6 @@ export default function PlanarApp() {
               className={`zoom-btn ${showPerson ? "active" : ""}`}
               onClick={() => setShowPerson((v) => !v)}
               title={showPerson ? "Hide human scale reference" : "Show human scale reference"}
-              disabled={pagesCount <= 1}
-              style={{ opacity: pagesCount <= 1 ? 0.35 : 1 }}
             >
               <User size={14} />
             </button>
