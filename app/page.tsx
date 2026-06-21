@@ -22,7 +22,9 @@ import {
   Sparkles,
   Maximize2,
   Coffee,
-  User
+  User,
+  Printer,
+  X
 } from "lucide-react";
 
 // Types
@@ -149,11 +151,19 @@ export default function PlanarApp() {
   const [allowRotation, setAllowRotation] = useState<boolean>(false);
   const [showOverlapGuides, setShowOverlapGuides] = useState<boolean>(true);
 
-  // Human scale reference toggle (shown alongside multi-page layouts)
-  const [showPerson, setShowPerson] = useState<boolean>(true);
+  // Human scale reference toggle (hidden by default; shown via the island)
+  const [showPerson, setShowPerson] = useState<boolean>(false);
+
+  // Margin / seam guide lines toggle (default on)
+  const [showSeamGuides, setShowSeamGuides] = useState<boolean>(true);
 
   // Gluing assembly preview (shown after exporting a multi-page PDF)
   const [showGluePreview, setShowGluePreview] = useState<boolean>(false);
+  const [gluePreviews, setGluePreviews] = useState<string[]>([]);
+
+  // Target poster grid for "Maximize images to fit"
+  const [posterCols, setPosterCols] = useState<number>(1);
+  const [posterRows, setPosterRows] = useState<number>(1);
 
   // Workspace states
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -1558,15 +1568,120 @@ export default function PlanarApp() {
     }
 
     // For multi-sheet posters, surface an assembly guide showing how the pages
-    // tile together and which seams to glue.
+    // actually look tiled together and which seams to glue.
     if (numPages > 1) {
-      setShowGluePreview(true);
+      await showAssemblyGuide(numPages);
     }
   };
 
-  const generatePageCanvas = async (pageIndex: number): Promise<HTMLCanvasElement> => {
+  // Build the assembly-guide previews (real rendered pages, low-res) and open
+  // the modal.
+  const showAssemblyGuide = async (numPages: number) => {
+    const previews: string[] = [];
+    for (let i = 0; i < numPages; i++) {
+      const c = await generatePageCanvas(i, 2);
+      previews.push(c.toDataURL("image/png"));
+    }
+    setGluePreviews(previews);
+    setShowGluePreview(true);
+  };
+
+  // Open the browser print dialog with one full-bleed page per sheet.
+  const triggerPrint = async () => {
+    if (images.length === 0) return alert("Upload images to print.");
+    const numPages = getLayoutDimensions().pagesCount;
+
+    const pages: string[] = [];
+    for (let i = 0; i < numPages; i++) {
+      const c = await generatePageCanvas(i);
+      pages.push(c.toDataURL("image/png"));
+    }
+
+    const win = window.open("", "_blank");
+    if (!win) {
+      alert("Please allow pop-ups to open the print dialog.");
+      return;
+    }
+
+    win.document.write(`<!DOCTYPE html><html><head><title>Planar Print</title>
+      <style>
+        @page { size: ${paperWidth}mm ${paperHeight}mm; margin: 0; }
+        html, body { margin: 0; padding: 0; }
+        img { display: block; width: ${paperWidth}mm; height: ${paperHeight}mm; page-break-after: always; }
+        img:last-child { page-break-after: auto; }
+      </style></head><body>
+      ${pages.map((src) => `<img src="${src}" />`).join("")}
+      </body></html>`);
+    win.document.close();
+
+    // Wait for the images to decode, then print.
+    const imgs = Array.from(win.document.images);
+    await Promise.all(
+      imgs.map((im) =>
+        im.complete
+          ? Promise.resolve()
+          : new Promise<void>((res) => {
+              im.onload = () => res();
+              im.onerror = () => res();
+            })
+      )
+    );
+    win.focus();
+    win.print();
+  };
+
+  // "Maximize images to fit": scale the selected image (or the only image) so
+  // it fills a user-defined poster grid of posterCols × posterRows sheets —
+  // as large as the pages, full-bleed, no distortion (overflow is centre-
+  // cropped via the crop system so the result is exactly that many pages).
+  const maximizeToFit = () => {
+    const target = selectedImage || (images.length === 1 ? images[0] : null);
+    if (!target) {
+      alert("Select an image first, then Maximize to fit.");
+      return;
+    }
+
+    const cols = Math.max(1, Math.round(posterCols));
+    const rows = Math.max(1, Math.round(posterRows));
+    const W = cols * usableWidth;
+    const H = rows * usableHeight;
+    const targetRatio = W / H;
+    const imgRatio = target.width / target.height;
+
+    let left = 0, right = 0, top = 0, bottom = 0;
+    if (imgRatio > targetRatio) {
+      const cut = 100 - (targetRatio / imgRatio) * 100;
+      left = cut / 2;
+      right = cut / 2;
+    } else {
+      const cut = 100 - (imgRatio / targetRatio) * 100;
+      top = cut / 2;
+      bottom = cut / 2;
+    }
+
+    const visFracW = 1 - (left + right) / 100;
+    const newTargetW = W / visFracW;
+    const newTargetH = newTargetW * (target.height / target.width);
+
+    setImages((prev) =>
+      prev.map((im) =>
+        im.id === target.id
+          ? {
+              ...im,
+              crop: { ...im.crop, left, right, top, bottom, ratioPreset: "free", shape: "rectangle" },
+              targetWidth: newTargetW,
+              targetHeight: newTargetH,
+              rotation: 0,
+              x: 0,
+              y: 0,
+            }
+          : im
+      )
+    );
+  };
+
+  const generatePageCanvas = async (pageIndex: number, renderScale = 6): Promise<HTMLCanvasElement> => {
     const canvas = document.createElement("canvas");
-    const renderScale = 6; 
     canvas.width = paperWidth * renderScale;
     canvas.height = paperHeight * renderScale;
     const ctx = canvas.getContext("2d");
@@ -1581,6 +1696,20 @@ export default function PlanarApp() {
 
     const pageLeft = col * usableWidth;
     const pageTop = row * usableHeight;
+
+    // Clip everything to the printable (margin-inset) area so NOTHING is drawn
+    // in the margins. Each page therefore carries exactly its slice of the
+    // poster; butt-join the trimmed usable areas and the image is continuous
+    // with zero pixels lost.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(
+      sheetMargin * renderScale,
+      sheetMargin * renderScale,
+      usableWidth * renderScale,
+      usableHeight * renderScale
+    );
+    ctx.clip();
 
     for (const img of images) {
       const { w: visibleW, h: visibleH } = getImageVisibleSize(img);
@@ -1669,12 +1798,15 @@ export default function PlanarApp() {
       ctx.restore();
     }
 
+    // Release the usable-area clip before drawing margin guides (which live in
+    // the margin strip itself).
+    ctx.restore();
+
     // --- Gluing seam guides ---------------------------------------------
     // Draw a gray dotted line along the margin boundary ONLY on sides that abut
-    // another sheet (an internal seam where the user overlaps and glues). The
-    // outermost edges of the whole poster get no line, because nothing is glued
-    // there. The margin strip itself is the overlap/glue allowance.
-    if (cols > 1 || rows > 1) {
+    // another sheet (an internal seam — cut here, then glue/tape the trimmed
+    // edges together). The outermost edges of the whole poster get no line.
+    if (showSeamGuides && (cols > 1 || rows > 1)) {
       const m = sheetMargin * renderScale;
       const W = canvas.width;
       const H = canvas.height;
@@ -1728,17 +1860,19 @@ export default function PlanarApp() {
             backgroundColor: "#ffffff",
           }}
         >
-          <div 
-            className="print-safe-margin"
-            style={{
-              position: "absolute",
-              top: `${sheetMargin * PX_PER_MM}px`,
-              left: `${sheetMargin * PX_PER_MM}px`,
-              right: `${sheetMargin * PX_PER_MM}px`,
-              bottom: `${sheetMargin * PX_PER_MM}px`,
-              border: "1px dashed rgba(128, 128, 128, 0.4)",
-            }}
-          />
+          {showSeamGuides && (
+            <div
+              className="print-safe-margin"
+              style={{
+                position: "absolute",
+                top: `${sheetMargin * PX_PER_MM}px`,
+                left: `${sheetMargin * PX_PER_MM}px`,
+                right: `${sheetMargin * PX_PER_MM}px`,
+                bottom: `${sheetMargin * PX_PER_MM}px`,
+                border: "1px dashed rgba(128, 128, 128, 0.4)",
+              }}
+            />
+          )}
         </div>
       );
     } else {
@@ -1758,24 +1892,26 @@ export default function PlanarApp() {
         />
       );
 
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          sheets.push(
-            <div
-              key={`sheet-${c}-${r}`}
-              style={{
-                position: "absolute",
-                width: `${paperWidth * PX_PER_MM}px`,
-                height: `${paperHeight * PX_PER_MM}px`,
-                left: `${c * usableWidth * PX_PER_MM}px`,
-                top: `${r * usableHeight * PX_PER_MM}px`,
-                border: "1px dotted rgba(128, 128, 128, 0.5)",
-                backgroundColor: "rgba(255, 255, 255, 0.02)",
-                pointerEvents: "none",
-                zIndex: 15,
-              }}
-            />
-          );
+      if (showSeamGuides) {
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            sheets.push(
+              <div
+                key={`sheet-${c}-${r}`}
+                style={{
+                  position: "absolute",
+                  width: `${paperWidth * PX_PER_MM}px`,
+                  height: `${paperHeight * PX_PER_MM}px`,
+                  left: `${c * usableWidth * PX_PER_MM}px`,
+                  top: `${r * usableHeight * PX_PER_MM}px`,
+                  border: "1px dotted rgba(128, 128, 128, 0.5)",
+                  backgroundColor: "rgba(255, 255, 255, 0.02)",
+                  pointerEvents: "none",
+                  zIndex: 15,
+                }}
+              />
+            );
+          }
         }
       }
     }
@@ -1901,6 +2037,13 @@ export default function PlanarApp() {
               style={{ opacity: pagesCount <= 1 ? 0.35 : 1 }}
             >
               <User size={14} />
+            </button>
+            <button
+              className={`zoom-btn ${showSeamGuides ? "active" : ""}`}
+              onClick={() => setShowSeamGuides((v) => !v)}
+              title={showSeamGuides ? "Hide margin & seam guides" : "Show margin & seam guides"}
+            >
+              <Scissors size={14} />
             </button>
           </div>
 
@@ -2447,6 +2590,44 @@ export default function PlanarApp() {
                   <p style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "-6px" }}>
                     Aspect ratio is locked. Drag corner handles to scale. Double-click image to crop.
                   </p>
+
+                  <div style={{ borderTop: "1px solid var(--border-main)", paddingTop: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                    <label className="input-label">Maximize across a poster grid (sheets)</label>
+                    <div className="settings-grid">
+                      <div className="input-group">
+                        <label className="input-label">Across (X)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="20"
+                          className="input-field"
+                          value={posterCols}
+                          onChange={(e) => {
+                            const v = parseInt(e.target.value);
+                            if (!isNaN(v)) setPosterCols(Math.max(1, v));
+                          }}
+                        />
+                      </div>
+                      <div className="input-group">
+                        <label className="input-label">Down (Y)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="20"
+                          className="input-field"
+                          value={posterRows}
+                          onChange={(e) => {
+                            const v = parseInt(e.target.value);
+                            if (!isNaN(v)) setPosterRows(Math.max(1, v));
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <button className="btn btn-secondary" onClick={maximizeToFit}>
+                      <Maximize2 size={14} />
+                      Maximize this image to fit
+                    </button>
+                  </div>
                 </div>
               </section>
 
@@ -2710,14 +2891,59 @@ export default function PlanarApp() {
                       <span>Allow 90° image rotation to conserve space</span>
                     </label>
 
-                    <button 
-                      className="btn btn-secondary" 
+                    <button
+                      className="btn btn-secondary"
                       onClick={() => setImages((prev) => distributeImagesList(prev))}
                       disabled={images.length === 0}
                     >
                       <Grid size={14} />
                       Distribute (Auto arrange)
                     </button>
+
+                    <div style={{ borderTop: "1px solid var(--border-main)", paddingTop: "12px", marginTop: "2px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                      <label className="input-label">Maximize image across a poster grid (sheets)</label>
+                      <div className="settings-grid">
+                        <div className="input-group">
+                          <label className="input-label">Across (X)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="20"
+                            className="input-field"
+                            value={posterCols}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value);
+                              if (!isNaN(v)) setPosterCols(Math.max(1, v));
+                            }}
+                          />
+                        </div>
+                        <div className="input-group">
+                          <label className="input-label">Down (Y)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="20"
+                            className="input-field"
+                            value={posterRows}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value);
+                              if (!isNaN(v)) setPosterRows(Math.max(1, v));
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={maximizeToFit}
+                        disabled={images.length === 0}
+                      >
+                        <Maximize2 size={14} />
+                        Maximize images to fit
+                      </button>
+                      <p style={{ fontSize: "11px", color: "var(--text-secondary)", lineHeight: "1.4", margin: 0 }}>
+                        Blows the selected image up to fill exactly {Math.max(1, Math.round(posterCols))} × {Math.max(1, Math.round(posterRows))} sheets, full-bleed (edges are cropped to fit, nothing distorted).
+                      </p>
+                    </div>
                 </div>
               </div>
 
@@ -2750,6 +2976,15 @@ export default function PlanarApp() {
                   >
                     <Download size={14} />
                     Export printable {exportFormat.toUpperCase()}
+                  </button>
+
+                  <button
+                    className="btn btn-secondary"
+                    onClick={triggerPrint}
+                    disabled={images.length === 0}
+                  >
+                    <Printer size={14} />
+                    Print…
                   </button>
 
                   <div className="size-summary">
@@ -2811,12 +3046,12 @@ export default function PlanarApp() {
                 <h2 className="glue-modal-title">Assembly Guide</h2>
                 <p className="glue-modal-subtitle">
                   Print all {pagesCount} sheets, then lay them out in this {cols} × {rows} grid.
-                  Overlap and glue along the <strong>gray dotted seams</strong>; the plain outer
-                  edges are the finished border of your poster.
+                  Trim along the <strong>gray dashed seams</strong> and join the trimmed edges; the
+                  plain outer edges are the finished border of your poster.
                 </p>
               </div>
-              <button className="icon-btn" onClick={() => setShowGluePreview(false)} title="Close">
-                <Plus size={18} style={{ transform: "rotate(45deg)" }} />
+              <button className="glue-close" onClick={() => setShowGluePreview(false)} title="Close">
+                <X size={18} />
               </button>
             </div>
 
@@ -2842,6 +3077,10 @@ export default function PlanarApp() {
                         borderBottom: r < rows - 1 ? "2px dashed #888" : "2px solid var(--text-main)",
                       }}
                     >
+                      {gluePreviews[num - 1] ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img src={gluePreviews[num - 1]} alt={`Sheet ${num}`} className="glue-cell-img" />
+                      ) : null}
                       <span className="glue-cell-num">{num}</span>
                     </div>
                   );
@@ -2851,10 +3090,10 @@ export default function PlanarApp() {
 
             <div className="glue-legend">
               <span className="glue-legend-item">
-                <span className="glue-swatch dashed" /> Glue seam (overlap here)
+                <span className="glue-swatch dashed" /> Cut &amp; join seam
               </span>
               <span className="glue-legend-item">
-                <span className="glue-swatch solid" /> Outer edge (do not glue)
+                <span className="glue-swatch solid" /> Outer edge (finished border)
               </span>
             </div>
 
