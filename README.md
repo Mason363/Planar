@@ -1,4 +1,8 @@
-<img src="Favicon.png" width="40" align="left" style="margin-right: 10px;" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="public/favicon-white.png">
+  <source media="(prefers-color-scheme: light)" srcset="public/favicon-black.png">
+  <img src="public/favicon-black.png" width="36" align="left" style="margin-right:12px; margin-top:4px;" />
+</picture>
 
 # Planar
 
@@ -12,9 +16,7 @@ Planar is a modern, lightweight, serverless browser utility built for designers,
 
 ## 📸 Preview
 
-https://github.com/user-attachments/assets/placeholder-video
-
-> *(Replace the line above with the actual GitHub video asset URL after uploading)*
+[![Watch the Planar demo on YouTube](https://img.youtube.com/vi/b9Zi2k1aaf4/maxresdefault.jpg)](https://www.youtube.com/watch?v=b9Zi2k1aaf4)
 
 | | |
 |:---:|:---:|
