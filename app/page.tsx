@@ -1451,12 +1451,98 @@ export default function PlanarApp() {
     setCalibrationDistance("");
   };
 
+  // Detect the bounding box of the actual content. Works for transparent
+  // images (alpha channel) and for opaque images with a solid-color border
+  // (e.g. product shots on a white/colored background).
+  const getContentBounds = (
+    imgElement: HTMLImageElement
+  ): { x: number; y: number; w: number; h: number } | null => {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    canvas.width = imgElement.naturalWidth;
+    canvas.height = imgElement.naturalHeight;
+    ctx.drawImage(imgElement, 0, 0);
+
+    try {
+      const w = canvas.width;
+      const h = canvas.height;
+      const data = ctx.getImageData(0, 0, w, h).data;
+
+      // Determine whether the image has meaningful transparency.
+      let hasAlpha = false;
+      for (let i = 3; i < data.length; i += 4) {
+        if (data[i] < 250) {
+          hasAlpha = true;
+          break;
+        }
+      }
+
+      let minX = w, maxX = -1, minY = h, maxY = -1;
+
+      if (hasAlpha) {
+        // Transparency-based detection.
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            if (data[(y * w + x) * 4 + 3] > 10) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+      } else {
+        // Solid-background detection: sample the four corners to estimate the
+        // background color, then find pixels that differ beyond a tolerance.
+        const cornerIdx = [
+          0,
+          (w - 1) * 4,
+          (h - 1) * w * 4,
+          ((h - 1) * w + (w - 1)) * 4,
+        ];
+        let br = 0, bg = 0, bb = 0;
+        for (const idx of cornerIdx) {
+          br += data[idx];
+          bg += data[idx + 1];
+          bb += data[idx + 2];
+        }
+        br /= cornerIdx.length;
+        bg /= cornerIdx.length;
+        bb /= cornerIdx.length;
+
+        const tolerance = 32; // per-channel distance considered "background"
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            if (
+              Math.abs(data[i] - br) > tolerance ||
+              Math.abs(data[i + 1] - bg) > tolerance ||
+              Math.abs(data[i + 2] - bb) > tolerance
+            ) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+      }
+
+      if (maxX < minX || maxY < minY) return null;
+      return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+    } catch (err) {
+      console.error("Content bounds reading error:", err);
+      return null;
+    }
+  };
+
   const handleAutoCrop = () => {
     if (!selectedImage) return;
     const imgEl = new Image();
-    imgEl.onload = async () => {
-      const bounds = await getImageBounds(imgEl);
-      if (!bounds) {
+    imgEl.onload = () => {
+      const bounds = getContentBounds(imgEl);
+      if (!bounds || (bounds.w >= imgEl.naturalWidth && bounds.h >= imgEl.naturalHeight)) {
         alert("Could not detect content boundaries for auto-cropping.");
         return;
       }
@@ -3428,16 +3514,14 @@ export default function PlanarApp() {
                     Crop Image Bounds
                   </button>
 
-                  {(selectedImage.backgroundRemoved || selectedImage.mimeType === "image/png") && (
-                    <button 
-                      className="btn btn-secondary" 
-                      onClick={handleAutoCrop}
-                      title="Shrink crop box to tightly fit the non-transparent content"
-                    >
-                      <Scissors size={14} />
-                      Auto Crop Content
-                    </button>
-                  )}
+                  <button
+                    className="btn btn-secondary"
+                    onClick={handleAutoCrop}
+                    title="Shrink crop box to tightly fit the content, removing transparent or solid-color borders"
+                  >
+                    <Scissors size={14} />
+                    Auto Crop Content
+                  </button>
 
                   {selectedImage.mimeType === "image/png" && selectedImage.bounds && (
                     <label className="checkbox-container">
