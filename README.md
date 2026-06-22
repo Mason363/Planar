@@ -15,9 +15,9 @@ Planar is a modern, lightweight, serverless browser utility built for designers,
 
 ---
 
-## 📸 Preview
+## Preview
 
-https://www.youtube.com/watch?v=b9Zi2k1aaf4
+https://github.com/user-attachments/assets/41deb988-3840-4da3-82e3-af5fdd5678f4
 
 | | |
 |:---:|:---:|
@@ -26,7 +26,7 @@ https://www.youtube.com/watch?v=b9Zi2k1aaf4
 
 ---
 
-## 🚀 Key Features
+## Features
 
 *   **Real-World Physical Calibration**: Calibrate exact real-world dimensions (mm, cm, in) by selecting two points on your image and entering their actual measurement.
 *   **Intuitive Direct Cropping**: Crop images by dragging borders and handles directly on the canvas preview, complete with real-time guides, an uncropped dimmed background, and a canvas-level cancellation history.
@@ -40,7 +40,7 @@ https://www.youtube.com/watch?v=b9Zi2k1aaf4
 
 ---
 
-## 🛠️ Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -69,7 +69,7 @@ Make sure you have **Node.js** installed on your system.
 
 ---
 
-## 💻 Tech Stack
+## Stack
 
 *   **Framework**: Next.js (React 19)
 *   **Language**: TypeScript
@@ -79,6 +79,8 @@ Make sure you have **Node.js** installed on your system.
 
 ---
 
-## 🔒 Privacy First
+## Privacy First
 
 Planar is fully serverless. All image scaling, cropping, background removal, and layout calculation happen strictly in your browser's local memory. No data or image files are uploaded to any external server.
+
+Made with ❤️ by Mason Chen
