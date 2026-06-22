@@ -1,10 +1,11 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="public/favicon-white.png">
-  <source media="(prefers-color-scheme: light)" srcset="public/favicon-black.png">
-  <img src="public/favicon-black.png" width="36" align="left" style="margin-right:12px; margin-top:4px;" />
-</picture>
-
-# Planar
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/favicon-white.png">
+    <source media="(prefers-color-scheme: light)" srcset="public/favicon-black.png">
+    <img src="public/favicon-black.png" width="28" />
+  </picture>
+  Planar
+</h1>
 
 **Scale, crop, and tile images onto sheets of paper for easy printing.**
 
@@ -16,7 +17,7 @@ Planar is a modern, lightweight, serverless browser utility built for designers,
 
 ## 📸 Preview
 
-[![Watch the Planar demo on YouTube](https://img.youtube.com/vi/b9Zi2k1aaf4/maxresdefault.jpg)](https://www.youtube.com/watch?v=b9Zi2k1aaf4)
+https://www.youtube.com/watch?v=b9Zi2k1aaf4
 
 | | |
 |:---:|:---:|
