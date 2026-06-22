@@ -1,3 +1,5 @@
+<img src="Favicon.png" width="40" align="left" style="margin-right: 10px;" />
+
 # Planar
 
 **Scale, crop, and tile images onto sheets of paper for easy printing.**
@@ -5,6 +7,19 @@
 Planar is a modern, lightweight, serverless browser utility built for designers, paper-crafters, and creators. It allows you to arrange, calibrate, crop, scale, and tile images across multiple physical print pages locally on your device.
 
 🔗 **Live Website**: [planar.masn.studio](https://planar.masn.studio)
+
+---
+
+## 📸 Preview
+
+https://github.com/user-attachments/assets/placeholder-video
+
+> *(Replace the line above with the actual GitHub video asset URL after uploading)*
+
+| | |
+|:---:|:---:|
+| ![Upload and arrange images on a print canvas](Demo/Demo%20Material/1.png) | ![Scale and tile images across poster grid sheets](Demo/Demo%20Material/2.png) |
+| ![Calibrate physical dimensions with two-point ruler tool](Demo/Demo%20Material/3.png) | ![Multi-page tiled print layout with assembly guides](Demo/Demo%20Material/4.png) |
 
 ---
 
